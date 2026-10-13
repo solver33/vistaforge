@@ -288,3 +288,58 @@ fn water_gets_a_light_biome() {
         "{c:?}"
     );
 }
+
+/// Rivers through swamps and marshes run over mud and silt, and every river's banks are soft
+/// ground rather than a band of stones, however strongly the terrain marks them with flow.
+#[test]
+fn river_banks_blend_into_the_land() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let b = Blocks::new(&catalog, &palette);
+    let s = Surface::new(&b, &settings()).unwrap();
+    let kind = |t: &Top| s.kit.mat(t.mat).kind;
+    for land in [Biome::Swamp, Biome::Marsh] {
+        let mut river = ColumnInfo::dry(61.5, Biome::River);
+        river.biome2 = land;
+        river.water_level = Some(63);
+        river.water = WaterKind::River;
+        river.flow = 1.0;
+        for (x, z) in Rect::new(0, 0, 40, 40).columns() {
+            let k = kind(&s.top(x, z, &river, None));
+            assert!(matches!(k, Kind::Mud | Kind::Moss), "{land:?} bed {k:?}");
+        }
+    }
+    let near = Near {
+        level: 63,
+        dist: 1.0,
+        river: true,
+    };
+    let (mut stones, mut total) = (0, 0);
+    for land in [Biome::Plains, Biome::Forest, Biome::Swamp] {
+        let mut bank = ColumnInfo::dry(63.5, land);
+        bank.biome2 = Biome::River;
+        bank.blend = 0.4;
+        bank.flow = 0.85;
+        bank.moisture = 0.7;
+        for (x, z) in Rect::new(0, 0, 40, 40).columns() {
+            for near in [Some(near), Some(Near { dist: 3.5, ..near }), None] {
+                let t = s.top(x, z, &bank, near);
+                assert!(
+                    !matches!(t.zone, Zone::Scree | Zone::Stony),
+                    "{land:?} {x} {z}"
+                );
+                total += 1;
+                if kind(&t) == Kind::Gravel {
+                    stones += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        stones * 10 < total,
+        "{stones} of {total} bank columns are stones"
+    );
+}

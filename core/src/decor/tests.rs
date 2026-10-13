@@ -219,3 +219,47 @@ fn trees_follow_the_biome() {
             > taiga.len() / 2
     );
 }
+
+/// Tall Conquest reeds stand as single, freshly placed blocks (`height` 1), never as a taller
+/// `height` on one block, which the game draws in broken pieces.
+#[test]
+fn tall_plants_stand_as_single_blocks() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let w = World::new(&catalog, &palette);
+    let tall = |name: &str| {
+        catalog
+            .class_of(name)
+            .is_some_and(|c| c.starts_with("PlantsTall"))
+    };
+    assert!(tall("conquest:cattail_reeds"));
+    let mut seen = 0;
+    for rz in 0..3 {
+        for rx in 0..5 {
+            let rect = Rect::new(
+                rx * REGION + 16,
+                rz * REGION + 16,
+                rx * REGION + 80,
+                rz * REGION + 80,
+            );
+            let (area, _) = w.piece(rect, false, true);
+            for (x, z) in rect.columns() {
+                let column = area.column(x, z);
+                for (i, &id) in column.iter().enumerate() {
+                    let state = palette.state(id);
+                    if !tall(&state.name) {
+                        continue;
+                    }
+                    seen += 1;
+                    assert_eq!(state.get("height"), Some("1"), "{state:?} at {x} {z}");
+                    let above = palette.state(column[i + 1]);
+                    assert!(!tall(&above.name), "stacked at {x} {z}");
+                }
+            }
+        }
+    }
+    assert!(seen > 50, "{seen}");
+}

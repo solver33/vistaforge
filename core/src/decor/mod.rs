@@ -473,17 +473,11 @@ impl Decor {
         let (y, l, wet) = (spot.y, spot.layers, spot.wet);
         let free = |sink: &dyn BlockSink, y: i32| sink.get(x, y, z) == AIR;
         match p.form {
-            Form::Tall(n) => {
-                let want = if n >= 3 {
-                    2 + (h >> 8) % (n as u64 - 1)
-                } else {
-                    1 + (h >> 8) % n as u64
-                } as i32;
-                let mut height = 1;
-                while height < want && free(sink, y + height) {
-                    height += 1;
-                }
-                if let Some(b) = p.id(height as usize - 1, false, l, wet) {
+            Form::Tall(_) => {
+                // As a freshly placed block. How Conquest 1.7.0 joins these into taller stacks
+                // isn't settled yet, and a single block with a larger `height` shows broken
+                // pieces in game.
+                if let Some(b) = p.id(0, false, l, wet) {
                     sink.set(x, y, z, b);
                 }
             }
@@ -573,6 +567,7 @@ impl Decor {
         let river = col.water == WaterKind::River;
 
         if river
+            && !swampy
             && matches!(top.zone, Zone::Bed(0 | 1))
             && unit(s, salt::RUBBLE, x, z) < 0.05 * self.detail
         {
@@ -635,20 +630,14 @@ impl Decor {
         let h = hash2(self.seed ^ salt::REED, x as i64, z as i64);
         let wet = cells > 0;
         match p.form {
-            Form::Tall(n) => {
-                let need = cells + 1;
-                if need > n as i32 {
-                    return false;
+            // One block, as in `put`: only where the ground's own layer holds the water.
+            Form::Tall(_) if cells == 0 => match p.id(0, false, spot.layers, wet) {
+                Some(b) => {
+                    sink.set(x, spot.y, z, b);
+                    true
                 }
-                let height = (need + (h % 3) as i32).min(n as i32);
-                match p.id(height as usize - 1, false, spot.layers, wet) {
-                    Some(b) => {
-                        sink.set(x, spot.y, z, b);
-                        true
-                    }
-                    None => false,
-                }
-            }
+                None => false,
+            },
             Form::Height2 | Form::Stack if cells <= 1 => {
                 let v = (h % p.variants() as u64) as usize;
                 let (Some(lo), Some(up)) = (
