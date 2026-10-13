@@ -10,7 +10,11 @@
 //! and large, normal and small branches; leaves in loose clumps. Then [`Trees::build`] fits
 //! the plan to the world: it stretches the trunk down to the ground of every column it covers,
 //! works out each branch's arms and post the way Conquest does, and writes the blocks. The
-//! world is only read in the columns being written, so neighbouring pieces of the map agree.
+//! world is only read in the columns being written, and other trees' blocks count as air
+//! there, so a tree's shape comes from its request and the ground alone. Where crowns
+//! overlap, the tree built later wins the shared cell: its leaves and wood replace leaves, but
+//! nothing replaces wood. The engine builds trees in a fixed order, so neighbouring pieces of
+//! the map agree.
 //!
 //! `tools/tree-render` draws side views of every species with [`render`].
 
@@ -22,7 +26,7 @@ mod species;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::sink::{BlockSink, Blocks, AIR};
+use crate::sink::{BlockId, BlockSink, Blocks, AIR};
 use kit::Kits;
 use plan::{Cell, Piece, Plan, DOWN, FOOT, MOSSY, SIDES, STUMP};
 
@@ -107,15 +111,14 @@ impl Trees {
             let (x, y, z) = (lx + origin.0, ly + origin.1, lz + origin.2);
             let target = sink.get(x, y, z);
             let wet = target == water;
-            let free = match cell.piece {
-                Piece::Leaves(_) => target == AIR,
-                _ => {
-                    target == AIR
-                        || wet
-                        || self.kits.leaves.contains(&target)
-                        || replace.contains(&(x, y, z))
-                }
-            };
+            // Where crowns overlap, the later tree wins: leaves replace leaves, wood replaces
+            // leaves, and nothing replaces another tree's wood.
+            let free = target == AIR
+                || self.kits.is_leaves(target)
+                || match cell.piece {
+                    Piece::Leaves(_) => false,
+                    _ => wet || replace.contains(&(x, y, z)),
+                };
             if !free {
                 continue;
             }
@@ -125,7 +128,7 @@ impl Trees {
                     let mossy = (cell.flags & MOSSY != 0) as u8;
                     let kit = &self.kits.woods[(cell.wood + mossy) as usize];
                     let arms = match piece {
-                        Piece::Branch(_) => branch_bits(&plan, &*sink, origin, (lx, ly, lz)),
+                        Piece::Branch(_) => self.branch_bits(&plan, &*sink, origin, (lx, ly, lz)),
                         _ => 0,
                     };
                     kit.id(
@@ -199,8 +202,14 @@ impl Trees {
         replace
     }
 
+    /// Whether a block is ground a tree can stand on or a branch rest on: anything but air,
+    /// water and the blocks of other trees, so no tree's shape depends on its neighbours.
+    fn is_ground(&self, id: BlockId) -> bool {
+        id != AIR && id != self.kits.water && !self.kits.is_tree(id)
+    }
+
     /// The top of the ground in a column, scanning down from `from` to `to`: its Y and the
-    /// Conquest layer count of the block there (8 for a full block). Water counts as air.
+    /// Conquest layer count of the block there (8 for a full block).
     fn ground(
         &self,
         sink: &dyn BlockSink,
@@ -211,7 +220,7 @@ impl Trees {
     ) -> Option<(i32, u8)> {
         (to..=from).rev().find_map(|y| {
             let id = sink.get(x, y, z);
-            if id == AIR || id == self.kits.water {
+            if !self.is_ground(id) {
                 return None;
             }
             let layers = sink.palette().with(id, |s| {
@@ -222,32 +231,34 @@ impl Trees {
             Some((y, layers))
         })
     }
-}
 
-/// Arms and post of a branch piece: an arm along each side its limb runs through (to the next
-/// branch, or into the trunk it leaves, which closes the gap there), and a post when anything
-/// stands below, as Conquest's own rule has it. Conquest joins every pair of neighbouring
-/// branches when a block next to them changes; the plan joins only each limb's own path, so
-/// limbs that pass side by side read as separate limbs. A pillar's top face isn't sturdy, so
-/// the game would drop the post above one on the next block update; it is kept so the trunk
-/// reads as one piece.
-fn branch_bits(
-    plan: &Plan,
-    sink: &dyn BlockSink,
-    (ox, oy, oz): (i32, i32, i32),
-    (x, y, z): (i32, i32, i32),
-) -> usize {
-    let mut bits = 0;
-    let links = plan.get(x, y, z).links;
-    for (s, (dx, dz)) in SIDES.iter().enumerate() {
-        if links & (1 << s) != 0 && plan.piece(x + dx, y, z + dz).is_wood() {
-            bits |= 1 << s;
+    /// Arms and post of a branch piece: an arm along each side its limb runs through (to the
+    /// next branch, or into the trunk it leaves, which closes the gap there), and a post when
+    /// the tree itself or the ground is below, as Conquest's own rule has it (other trees don't
+    /// count). Conquest joins every pair of neighbouring branches when a block next to them
+    /// changes; the plan joins only each limb's own path, so limbs that pass side by side read
+    /// as separate limbs. A pillar's top face isn't sturdy, so the game would drop the post
+    /// above one on the next block update; it is kept so the trunk reads as one piece.
+    fn branch_bits(
+        &self,
+        plan: &Plan,
+        sink: &dyn BlockSink,
+        (ox, oy, oz): (i32, i32, i32),
+        (x, y, z): (i32, i32, i32),
+    ) -> usize {
+        let mut bits = 0;
+        let links = plan.get(x, y, z).links;
+        for (s, (dx, dz)) in SIDES.iter().enumerate() {
+            if links & (1 << s) != 0 && plan.piece(x + dx, y, z + dz).is_wood() {
+                bits |= 1 << s;
+            }
         }
+        let below = sink.get(x + ox, y - 1 + oy, z + oz);
+        if plan.piece(x, y - 1, z) != Piece::Empty || self.is_ground(below) {
+            bits |= 16;
+        }
+        bits
     }
-    if plan.piece(x, y - 1, z) != Piece::Empty || sink.get(x + ox, y - 1 + oy, z + oz) != AIR {
-        bits |= 16;
-    }
-    bits
 }
 
 #[cfg(test)]
@@ -257,7 +268,7 @@ mod tests {
     use super::*;
     use crate::catalog::Catalog;
     use crate::column::Rect;
-    use crate::sink::{BlockId, Palette};
+    use crate::sink::Palette;
     use crate::world::Area;
 
     fn catalog() -> Option<Catalog> {
@@ -342,5 +353,60 @@ mod tests {
             }
         }
         crate::engine::validate_palette(&palette, &catalog).unwrap();
+    }
+
+    /// A tree comes out the same next to a neighbour, except where the neighbour's wood was
+    /// there first; and it wins every cell of the neighbour's leaves it wants.
+    #[test]
+    fn neighbours_do_not_change_a_tree() {
+        let Some(catalog) = catalog() else {
+            eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+            return;
+        };
+        let palette = Palette::new();
+        let b = Blocks::new(&catalog, &palette);
+        let trees = Trees::new(&b).unwrap();
+        let grass = b
+            .id("minecraft:grass_block", &[("snowy", "false")])
+            .unwrap();
+        let rect = Rect::new(-24, -24, 25, 25);
+        let ground = || {
+            let mut area = Area::new(rect, &palette);
+            for (x, z) in rect.columns() {
+                area.fill_column(x, z, 50, 64, grass);
+            }
+            area
+        };
+        let req = |species, x, seed| TreeRequest {
+            species,
+            x,
+            y: 64,
+            z: 0,
+            size: 0.8,
+            seed,
+        };
+        for (n, &species) in Species::ALL.iter().enumerate() {
+            let tree = req(species, 0, 7 + n as u64);
+            let neighbour = req(Species::Oak, 5, 99);
+            let (mut alone, mut first, mut both) = (ground(), ground(), ground());
+            trees.build(&tree, &mut alone);
+            trees.build(&neighbour, &mut first);
+            trees.build(&neighbour, &mut both);
+            trees.build(&tree, &mut both);
+            for (x, z) in rect.columns() {
+                for y in 64..110 {
+                    let mine = alone.get(x, y, z);
+                    let theirs = first.get(x, y, z);
+                    let got = both.get(x, y, z);
+                    if mine == AIR {
+                        assert_eq!(got, theirs, "{species:?} changed ({x}, {y}, {z})");
+                    } else if trees.kits.is_tree(theirs) && !trees.kits.is_leaves(theirs) {
+                        assert_eq!(got, theirs, "{species:?} replaced wood at ({x}, {y}, {z})");
+                    } else {
+                        assert_eq!(got, mine, "{species:?} differs at ({x}, {y}, {z})");
+                    }
+                }
+            }
+        }
     }
 }

@@ -1,6 +1,8 @@
 //! Block ids for the wood types and leaves trees are built from, resolved once against the
 //! user's catalog.
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 
 use super::plan::{Piece, SIDES};
@@ -191,6 +193,20 @@ impl Kit {
             Piece::Branch(t) => self.branch[t.index()][arms][w],
         }
     }
+
+    /// Every block of the kit.
+    fn all(&self) -> Vec<BlockId> {
+        let mut out = vec![self.log, self.bark];
+        for t in [&self.pillar, &self.stump] {
+            out.extend(t.iter().flatten().flatten());
+        }
+        for t in [&self.quarter, &self.quarter_stump] {
+            out.extend(t.iter().flatten().flatten().flatten());
+        }
+        out.extend(self.slab.iter().flatten().flatten());
+        out.extend(self.branch.iter().flatten().flatten());
+        out
+    }
 }
 
 /// Every block trees are made of.
@@ -198,6 +214,8 @@ pub(super) struct Kits {
     pub woods: Vec<Kit>,
     pub leaves: Vec<BlockId>,
     pub water: BlockId,
+    /// All of the above but water: what another tree may have left in the world.
+    tree: HashSet<BlockId>,
 }
 
 impl Kits {
@@ -212,11 +230,26 @@ impl Kits {
             props.extend_from_slice(extra);
             leaves.push(b.id(name, &props)?);
         }
+        let tree = woods
+            .iter()
+            .flat_map(|k| k.all())
+            .chain(leaves.iter().copied())
+            .collect();
         Ok(Self {
             woods,
             leaves,
             water: b.id("minecraft:water", &[("level", "0")])?,
+            tree,
         })
+    }
+
+    /// A block some tree is built of.
+    pub fn is_tree(&self, id: BlockId) -> bool {
+        self.tree.contains(&id)
+    }
+
+    pub fn is_leaves(&self, id: BlockId) -> bool {
+        self.leaves.contains(&id)
     }
 }
 
