@@ -31,7 +31,7 @@ use anyhow::Result;
 use crate::biome::Biome;
 use crate::column::{ColumnGrid, ColumnInfo, Rect, WaterKind};
 use crate::noise::unit2;
-use crate::settings::{Sliders, WorldSettings};
+use crate::settings::{Sliders, WorldHeight, WorldSettings};
 use crate::world::MIN_Y;
 
 use edits::Zone;
@@ -52,7 +52,7 @@ pub enum Quality {
 const CELL: f64 = 8.0;
 /// Droplet erosion grid spacing in blocks.
 const FINE: f64 = 2.0;
-/// Highest ground allowed (the world ends at 319).
+/// Highest ground allowed in a standard world (it ends at 319).
 const TOP: f32 = 300.0;
 
 struct Fine {
@@ -65,6 +65,8 @@ struct Fine {
 pub struct Terrain {
     seed: u64,
     size: i32,
+    /// Highest ground allowed: [`TOP`], or 20 blocks under the top of a tall world.
+    top: f32,
     /// Water fills every Y below this at sea.
     sea_surface: i32,
     sliders: Sliders,
@@ -417,6 +419,10 @@ impl Terrain {
         let mut terrain = Self {
             seed,
             size,
+            top: match settings.world_height {
+                WorldHeight::Standard => TOP,
+                tall => (tall.max_y() - 20) as f32,
+            },
             sea_surface,
             sliders: sl,
             bands,
@@ -764,7 +770,7 @@ impl Terrain {
                 h = h.max(floor);
             }
         }
-        let h = h.clamp(MIN_Y as f32 + 4.0, TOP);
+        let h = h.clamp(MIN_Y as f32 + 4.0, self.top);
 
         // Beaches: low, gentle ground beside the sea or a large lake.
         let mut beach = 0.0;

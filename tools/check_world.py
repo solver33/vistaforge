@@ -93,12 +93,15 @@ for fname in regions:
         assert int(nbt['DataVersion']) == 3465 and str(nbt['Status']) == 'minecraft:full' and int(nbt['yPos']) == -4
         assert 'Heightmaps' not in nbt and int(nbt['isLightOn']) == 0
         secs = nbt['sections']
-        assert [int(s['Y']) for s in secs] == list(range(-4, 20)), 'section Ys'
+        # 24 sections in a normal world, more when a data pack makes the overworld taller.
+        assert [int(s['Y']) for s in secs] == list(range(-4, -4 + len(secs))), 'section Ys'
+        assert len(secs) >= 24, 'section count'
         # (y, z, x) arrays for the whole chunk: block names and biome names per 4×4×4 cell.
         col_top = np.full((16, 16), -999, dtype=np.int32)
         col_top_name = np.empty((16, 16), dtype=object)
         col_water = np.full((16, 16), -999, dtype=np.int32)
-        cell_biome = np.empty((96, 4, 4), dtype=object)
+        cells_y = len(secs) * 4
+        cell_biome = np.empty((cells_y, 4, 4), dtype=object)
         for s in secs:
             sy = int(s['Y'])
             bs = s['block_states']
@@ -157,7 +160,7 @@ for fname in regions:
                     continue
                 cy = (w + 64) // 4
                 biome_at_water[cell_biome[cy, lz // 4, lx // 4]] += 1
-                if col_top[lz, lx] > w and cy + 1 < 96:
+                if col_top[lz, lx] > w and cy + 1 < cells_y:
                     biome_above_water[cell_biome[cy + 1, lz // 4, lx // 4]] += 1
 
 print('chunks', chunks, 'distinct states', len(states), 'problems', problems[:10] or 'none')

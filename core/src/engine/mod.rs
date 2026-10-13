@@ -31,6 +31,9 @@ use crate::world::{Area, MIN_Y};
 pub const UNIT: i32 = 64;
 /// Extra columns generated around a unit; covers the reach of trees and decor.
 pub const MARGIN: i32 = 16;
+/// Blocks kept free above a piece's highest ground before its area has to grow; covers the
+/// tallest trees.
+const HEADROOM: i32 = 64;
 const _: () = assert!(MARGIN >= trees::MAX_REACH && MARGIN >= decor::MAX_REACH);
 
 pub struct Generator<'c> {
@@ -123,7 +126,15 @@ impl<'c> Generator<'c> {
     pub fn generate(&self, rect: Rect) -> Piece<'_> {
         let buffer = rect.expand(MARGIN);
         let grid = self.terrain.grid(buffer);
-        let mut area = Area::new(buffer, &self.palette);
+        // Room for the ground, water and trees up front; the area grows if anything goes higher.
+        let ground = grid
+            .columns
+            .iter()
+            .map(|c| (c.height.ceil() as i32).max(c.water_level.unwrap_or(MIN_Y)))
+            .max()
+            .unwrap_or(MIN_Y);
+        let max_y = self.settings.world_height.max_y();
+        let mut area = Area::for_world(buffer, &self.palette, max_y, ground + HEADROOM);
         for (x, z) in buffer.columns() {
             self.surface.fill(x, z, &grid, &mut area);
         }
@@ -370,6 +381,7 @@ impl<'c> Generator<'c> {
                 border_center: (half, half),
                 border_size: size as f64,
                 creative: true,
+                height: self.settings.world_height,
             },
             &world_dir,
         )?;
@@ -459,11 +471,17 @@ pub fn validate_palette(palette: &Palette, catalog: &Catalog) -> Result<()> {
     Ok(())
 }
 
-/// True when two areas hold the same blocks in every column of `rect`.
+/// True when two areas hold the same blocks in every column of `rect`. Areas may store
+/// different amounts of a column; whatever one stores beyond the other must be air.
 #[cfg(test)]
 pub(crate) fn same_blocks(a: &Area, b: &Area, rect: Rect) -> bool {
-    rect.columns()
-        .all(|(x, z)| a.column(x, z) == b.column(x, z))
+    rect.columns().all(|(x, z)| {
+        let (ca, cb) = (a.column(x, z), b.column(x, z));
+        let n = ca.len().min(cb.len());
+        ca[..n] == cb[..n]
+            && ca[n..].iter().all(|&id| id == crate::sink::AIR)
+            && cb[n..].iter().all(|&id| id == crate::sink::AIR)
+    })
 }
 
 #[cfg(test)]
@@ -538,5 +556,48 @@ mod tests {
             trees >= 8,
             "only {trees} trees: the test needs a dense patch"
         );
+    }
+
+    /// A tall world keeps ground above Y 319, agrees across pieces, and its export carries the
+    /// height data pack and full-height chunks.
+    #[test]
+    fn tall_worlds_reach_above_vanilla() {
+        let Some(catalog) = catalog() else {
+            eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+            return;
+        };
+        let settings = WorldSettings {
+            name: format!("vistaforge-tall-{}", std::process::id()),
+            size: 256,
+            world_height: crate::settings::WorldHeight::Tall,
+            edits: vec![crate::settings::ShapeEdit::Mountain {
+                x: 128.0,
+                z: 128.0,
+                radius: 120.0,
+                height: 900.0,
+            }],
+            ..WorldSettings::default()
+        };
+        let g = Generator::new(&settings, &catalog, Quality::Full).unwrap();
+        let a = g.generate(Rect::new(96, 96, 160, 160));
+        let b = g.generate(Rect::new(128, 112, 192, 176));
+        assert!(same_blocks(&a.area, &b.area, Rect::new(128, 112, 160, 160)));
+        let peak = (96..160)
+            .flat_map(|x| (96..160).map(move |z| (x, z)))
+            .filter_map(|(x, z)| a.area.top(x, z))
+            .max()
+            .unwrap();
+        assert!(peak > 700, "peak at {peak}");
+
+        let dir = std::env::temp_dir();
+        let report = g
+            .export(&dir, true, &|_| {}, &AtomicBool::new(false))
+            .unwrap();
+        let world = dir.join(&settings.name);
+        assert!(world
+            .join("datapacks/vistaforge-height/data/minecraft/dimension_type/overworld.json")
+            .is_file());
+        assert!(report.spawn.1 > 319, "spawn {:?}", report.spawn);
+        std::fs::remove_dir_all(world).ok();
     }
 }
