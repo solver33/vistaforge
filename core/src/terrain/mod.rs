@@ -54,6 +54,13 @@ const CELL: f64 = 8.0;
 const FINE: f64 = 2.0;
 /// Highest ground allowed in a standard world (it ends at 319).
 const TOP: f32 = 300.0;
+/// How a tall world uses its height. The broad shape of the high ground rises `TALL_STRETCH`
+/// times, its valleys and ridges `1 + TALL_DETAIL × (TALL_STRETCH − 1)` times, and mountain
+/// ranges are `TALL_WIDE` times as wide, so the extra height makes massifs, not spires.
+/// Lowlands keep their height.
+const TALL_STRETCH: f64 = 10.0;
+const TALL_DETAIL: f64 = 0.2;
+const TALL_WIDE: f64 = 3.0;
 
 struct Fine {
     /// Height change from droplet erosion.
@@ -67,6 +74,8 @@ pub struct Terrain {
     size: i32,
     /// Highest ground allowed: [`TOP`], or 20 blocks under the top of a tall world.
     top: f32,
+    /// 1, or how much a tall world raises its high ground ([`TALL_STRETCH`]).
+    stretch: f64,
     /// Water fills every Y below this at sea.
     sea_surface: i32,
     sliders: Sliders,
@@ -159,6 +168,43 @@ fn gullies(seed: u64, x: f64, z: f64, slope: (f64, f64), octaves: u64) -> f64 {
     h * amount
 }
 
+/// Height above the sea `d` stretched `stretch` times for a tall world: unchanged up to 15
+/// blocks, then rising `stretch` times as fast from 110 blocks up, so lowlands and their
+/// rivers stay as they are and mountains tower over them.
+fn uplift(d: f64, stretch: f64) -> f64 {
+    const A: f64 = 15.0;
+    const B: f64 = 110.0;
+    if stretch <= 1.0 || d <= A {
+        return d;
+    }
+    // The extra height is `stretch - 1` times the integral of smoothstep(A, B, d).
+    let extra = if d >= B {
+        d - B + 0.5 * (B - A)
+    } else {
+        let u = (d - A) / (B - A);
+        (B - A) * (u * u * u - 0.5 * u * u * u * u)
+    };
+    d + (stretch - 1.0) * extra
+}
+
+/// How many times steeper than in a standard world valleys and ridges are at height `d`
+/// above the sea: 1 in the lowlands, up to `1 + TALL_DETAIL × (stretch − 1)` up high.
+fn steepening(d: f64, stretch: f64) -> f64 {
+    1.0 + TALL_DETAIL * (stretch - 1.0).max(0.0) * smoothstep(15.0, 110.0, d)
+}
+
+/// Rounds off peaks that would reach the top of the world, so they never end flat: heights
+/// above the knee bend towards a ceiling just under `top`.
+fn soft_cap(h: f64, top: f64, stretch: f64) -> f64 {
+    let room = 50.0 * stretch;
+    let knee = top - room - if stretch > 1.0 { 30.0 } else { 0.0 };
+    if h > knee {
+        knee + room * ((h - knee) / room).tanh()
+    } else {
+        h
+    }
+}
+
 fn ground_y(h: f32) -> i32 {
     ColumnInfo::dry(h, Biome::Plains).ground().0
 }
@@ -202,6 +248,15 @@ impl Terrain {
         let relief = 0.35 + 1.3 * clamp(sl.relief);
         let peaks = 0.4 + 1.2 * clamp(sl.mountains);
         let water = clamp(sl.water);
+        let top = match settings.world_height {
+            WorldHeight::Standard => TOP,
+            tall => (tall.max_y() - 20) as f32,
+        };
+        let (stretch, wide) = match settings.world_height {
+            WorldHeight::Standard => (1.0, 1.0),
+            WorldHeight::Tall => (TALL_STRETCH, TALL_WIDE),
+        };
+        let steeper = steepening(f64::MAX, stretch);
 
         // 1. Layout.
         let mix = Mix::new(settings);
@@ -228,7 +283,7 @@ impl Terrain {
             }
             None => (Vec::new(), Vec::new()),
         };
-        let mscale = 520.0 * (0.75 + 0.5 * clamp(sl.biome_scale));
+        let mscale = 520.0 * wide * (0.75 + 0.5 * clamp(sl.biome_scale));
         let e = &regions.e;
         let mut height = Field::from_fn(n, CELL, |i, j| {
             let k = j * n + i;
@@ -266,11 +321,24 @@ impl Terrain {
                     h = low + (h - low) * t;
                 }
             }
-            if h > 250.0 {
-                h = 250.0 + 50.0 * ((h - 250.0) / 50.0).tanh();
+            if stretch > 1.0 {
+                h as f32
+            } else {
+                soft_cap(h, top as f64, stretch) as f32
             }
-            h as f32
         });
+        if stretch > 1.0 {
+            // The broad shape (blurred over about 200 blocks) rises fully, what stands above
+            // or below it less.
+            let mut base = height.clone();
+            base.blur(24, 2);
+            for (v, b) in height.data.iter_mut().zip(&base.data) {
+                let d = (*b - sea_f) as f64;
+                let h =
+                    sea_f as f64 + uplift(d, stretch) + steepening(d, stretch) * (*v - *b) as f64;
+                *v = soft_cap(h, top as f64, stretch) as f32;
+            }
+        }
         // Hollows for lakes, more with the water slider.
         let dents = ((size as f64 / 1024.0).powi(2) * 16.0 * water * water).round() as usize;
         for d in 0..dents {
@@ -316,7 +384,7 @@ impl Terrain {
             0.0035,
             seeds,
         );
-        erosion::thermal(&mut height.data, n, CELL as f32, 1.3, 4);
+        erosion::thermal(&mut height.data, n, CELL as f32, 1.3 * steeper as f32, 4);
 
         // 4. Water.
         edits::late(&mut height, &settings.edits, seed);
@@ -412,7 +480,8 @@ impl Terrain {
             .filter(|&k| mountain.data[k] > 0.6 && w.lake[k] == NONE && !w.sea[k])
             .map(|k| height.data[k])
             .collect();
-        let bands = Bands::from_heights(&mix.family, mountain_heights, sea_f);
+        let mut bands = Bands::from_heights(&mix.family, mountain_heights, sea_f);
+        bands.spread = steeper as f32;
         // Hand-made peaks use the mix's mountain bands, or rock and snow when it has none.
         let edit_bands = bands.clone();
         // Shore nodes where detail may take the ground under the water join the water's reach.
@@ -440,10 +509,8 @@ impl Terrain {
         let mut terrain = Self {
             seed,
             size,
-            top: match settings.world_height {
-                WorldHeight::Standard => TOP,
-                tall => (tall.max_y() - 20) as f32,
-            },
+            top,
+            stretch,
             sea_surface,
             sliders: sl,
             bands,
@@ -766,6 +833,12 @@ impl Terrain {
             - 1.1 * channel
     }
 
+    /// How many times steeper than in a standard world the ground at height `h` is (1 in a
+    /// standard world).
+    fn steeper(&self, h: f64) -> f64 {
+        steepening(h - self.sea_surface as f64, self.stretch)
+    }
+
     /// Ground before any water shapes it: the smooth ground with droplet erosion, rock
     /// ledges on steep slopes and wetlands flattened to their water table. It has no
     /// block-scale unevenness, so water edges that follow it are clean lines. Lake and river
@@ -778,12 +851,13 @@ impl Terrain {
 
         // Rock ledges on steep, rocky slopes.
         let patches = smoothstep(-0.1, 0.4, perlin(self.seed ^ 0x7E1, fx / 70.0, fz / 70.0));
+        let k = self.steeper(hs);
         let ledges = self.terrace.bilinear(fx, fz)
-            * smoothstep(0.6, 1.2, self.steep.bilinear(fx, fz))
+            * smoothstep(0.6, 1.2, self.steep.bilinear(fx, fz) / k)
             * patches;
         if ledges > 0.01 {
-            let step = 7.0 + 3.0 * perlin(self.seed ^ 0x7E2, fx / 90.0, fz / 90.0);
-            let offset = 2.0 * perlin(self.seed ^ 0x7E3, fx / 40.0, fz / 40.0);
+            let step = (7.0 + 3.0 * perlin(self.seed ^ 0x7E2, fx / 90.0, fz / 90.0)) * k.sqrt();
+            let offset = 2.0 * k.sqrt() * perlin(self.seed ^ 0x7E3, fx / 40.0, fz / 40.0);
             let q = (hs + offset) / step;
             let stepped = (q.floor() + smoothstep(0.6, 1.0, q - q.floor())) * step - offset;
             hs = lerp(hs, stepped, ledges * 0.6);
@@ -1008,6 +1082,9 @@ impl Terrain {
     fn finish(&self, x: i32, z: i32, s: &Sample, slope: f32) -> ColumnInfo {
         let (fx, fz) = (x as f64, z as f64);
         let h = s.h;
+        // Biomes and rock go by how steep the ground is for its kind of world, so the tall
+        // world's steeper mountains are dressed like a standard world's.
+        let feel = slope / self.steeper(h as f64) as f32;
         let jitter = perlin(self.seed ^ 0x717, fx / 31.0, fz / 31.0) as f32;
         let bank_noise = if s.river_edge < 7.0 {
             0.5 + 0.5 * perlin(self.seed ^ 0xBA4, fx / 9.0, fz / 9.0) as f32
@@ -1017,7 +1094,7 @@ impl Terrain {
         let (c1, c2, t) = self.regions_at(fx, fz);
         let resolve = |c: u8| match self.mix.categories[c as usize].biome {
             Some(b) => (b, b, 0.0),
-            None => self.bands.resolve(h, slope, jitter),
+            None => self.bands.resolve(h, feel, jitter),
         };
         let (b1, o1, t1) = resolve(c1);
         let (mut biome, mut biome2, mut blend) = if c2 != c1 && t >= t1 {
@@ -1029,9 +1106,9 @@ impl Terrain {
         // Hand-made mountains: rock on steep or high ground, snow above the snow line.
         let lift = self.lift.bilinear(fx, fz) as f32;
         if lift > 20.0 && !is_mountain(biome) {
-            let (band, _, _) = self.edit_bands.resolve(h, slope, jitter);
+            let (band, _, _) = self.edit_bands.resolve(h, feel, jitter);
             let snowy = band == Biome::SnowyPeaks;
-            if snowy || slope > 0.75 || lift > 70.0 {
+            if snowy || feel > 0.75 || lift > 70.0 {
                 biome2 = biome;
                 biome = if snowy || !self.edit_bands.members.contains(&Biome::Mountains) {
                     band
@@ -1117,11 +1194,11 @@ impl Terrain {
         }
         .clamp(0.0, 1.0);
 
-        let steep = smoothstep(0.7, 1.45, slope as f64) as f32;
+        let steep = smoothstep(0.7, 1.45, feel as f64) as f32;
         let outcrop = (perlin(self.seed ^ 0x0C, fx / 17.0, fz / 17.0) as f32 - 0.42).max(0.0) * 1.3;
         let mut rock = 0.9 * steep + 0.08 * jitter;
         rock += match land {
-            Biome::Mountains => 0.12 + 0.35 * smoothstep(0.25, 0.7, slope as f64) as f32 + outcrop,
+            Biome::Mountains => 0.12 + 0.35 * smoothstep(0.25, 0.7, feel as f64) as f32 + outcrop,
             Biome::SnowyPeaks => 0.1,
             Biome::AlpineMeadow | Biome::Highlands => outcrop,
             Biome::PineForest | Biome::Taiga => 0.4 * outcrop,

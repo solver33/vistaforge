@@ -152,6 +152,38 @@ fn columns_are_in_range() {
     }
 }
 
+#[test]
+fn tall_worlds_raise_mountains_under_the_ceiling() {
+    use crate::settings::WorldHeight;
+    let make = |id: &str, height: WorldHeight| {
+        let mut s = presets::find(id).unwrap().settings("t", 512, 3);
+        s.world_height = height;
+        Terrain::new(&s, Quality::Preview).unwrap()
+    };
+    let heights = |t: &Terrain| -> Vec<f32> {
+        (0..32)
+            .flat_map(|j| (0..32).map(move |i| (i * 16, j * 16)))
+            .map(|(x, z)| t.column(x, z).height)
+            .collect()
+    };
+    let max = |h: &[f32]| h.iter().copied().fold(f32::MIN, f32::max);
+    for id in ["realistic_mountains", "high_alps"] {
+        let (low, high) = (make(id, WorldHeight::Standard), make(id, WorldHeight::Tall));
+        let (a, b) = (max(&heights(&low)), max(&heights(&high)));
+        assert!(b > 2.5 * a, "{id}: {a} -> {b}");
+        assert!(b < high.top - 20.0, "{id}: {b} reaches the ceiling");
+    }
+    // Lowlands keep their height.
+    let (a, b) = (
+        heights(&make("plains", WorldHeight::Standard)),
+        heights(&make("plains", WorldHeight::Tall)),
+    );
+    assert!(a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 0.5));
+    // Tall presets make tall worlds.
+    let s = presets::find("epic_peaks").unwrap().settings("t", 512, 3);
+    assert_eq!(s.world_height, WorldHeight::Tall);
+}
+
 fn biome_rgb(b: Biome) -> [f32; 3] {
     match b {
         Biome::Plains => [126.0, 170.0, 80.0],
