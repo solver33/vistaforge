@@ -1,5 +1,5 @@
 //! Phase 0 test map: a square meadow of Conquest Reforged layer blocks with a pond, a sandy
-//! shore, meadow plants and a few oaks built from Conquest branch pieces.
+//! shore, meadow plants and oaks built from Conquest trunk and branch pieces.
 //!
 //! It exists to check in the game that the world format, lighting, water, block states and
 //! neighbour-dependent states (branch connections, plants sitting on layers) come out right.
@@ -34,11 +34,13 @@ struct Blocks {
     gravel: BlockState,
     water: BlockState,
     log: BlockState,
+    pillar: BlockState,
     leaves: BlockState,
     grass_layers: Vec<BlockState>,
     clover_layers: Vec<BlockState>,
     sand_layers: Vec<BlockState>,
     gravel_layers_wet: Vec<BlockState>,
+    sand_layers_wet: Vec<BlockState>,
     plants: Vec<String>,
     large_branch: String,
     branch: String,
@@ -83,6 +85,11 @@ impl Blocks {
             gravel: c.default_state("minecraft:gravel")?,
             water: c.state("minecraft:water", &[("level", "0")])?,
             log: c.state("minecraft:oak_log", &[("axis", "y")])?,
+            // layer=3 is the thickest pillar, 12 px wide.
+            pillar: c.state(
+                "conquest:oak_log_pillar",
+                &[("layer", "3"), ("down", "false"), ("waterlogged", "false")],
+            )?,
             leaves: c.state(
                 "minecraft:oak_leaves",
                 &[("persistent", "true"), ("distance", "1")],
@@ -91,6 +98,7 @@ impl Blocks {
             clover_layers: layer_states(c, "conquest:clover_covered_grass_layer", false)?,
             sand_layers: layer_states(c, "conquest:sand_layer", false)?,
             gravel_layers_wet: layer_states(c, "conquest:gravel_layer", true)?,
+            sand_layers_wet: layer_states(c, "conquest:wet_sand_layer", true)?,
             plants: plants.iter().map(|s| s.to_string()).collect(),
             large_branch: "conquest:oak_log_large_branch".into(),
             branch: "conquest:oak_log_branch".into(),
@@ -109,9 +117,10 @@ fn height(seed: u64, size: i32, x: i32, z: i32) -> (f64, f64) {
     // A pond: a smooth bowl that dips below the water line.
     let (px, pz, r) = (size as f64 * 0.70, size as f64 * 0.36, size as f64 * 0.11);
     let d = ((fx - px).powi(2) + (fz - pz).powi(2)).sqrt() / r;
-    if d < 1.6 {
-        let t = (1.0 - d / 1.6).max(0.0);
-        h -= 9.0 * t * t * (3.0 - 2.0 * t);
+    if d < 2.0 {
+        // Gentle banks so layers can follow them without one-block steps.
+        let t = (1.0 - d / 2.0).max(0.0);
+        h -= 8.5 * t * t * (3.0 - 2.0 * t);
     }
     (h, d)
 }
@@ -142,16 +151,17 @@ pub fn generate(catalog: &Catalog, opts: &TestWorldOptions) -> Result<TestWorld>
                 layers = 0;
             }
             let underwater = h < WATER_Y as f64 + 0.9;
-            let beach = !underwater && pond_distance < 1.6 && h < WATER_Y as f64 + 1.8;
+            let shallow = underwater && h > WATER_Y as f64 - 1.5;
+            let beach = !underwater && pond_distance < 2.0 && h < WATER_Y as f64 + 1.6;
             let clover = fbm2(opts.seed ^ 0xC10, x as f64 / 24.0, z as f64 / 24.0, 2) > 0.25;
 
             world.set(x, MIN_Y, z, &b.bedrock);
             for y in MIN_Y + 1..=top {
                 let state = if y <= top - 4 {
                     &b.stone
-                } else if underwater {
+                } else if underwater && !shallow {
                     &b.gravel
-                } else if beach {
+                } else if underwater || beach {
                     &b.sand
                 } else if y == top && layers == 0 {
                     &b.grass
@@ -164,9 +174,12 @@ pub fn generate(catalog: &Catalog, opts: &TestWorldOptions) -> Result<TestWorld>
             if layers > 0 {
                 let l = (layers - 1) as usize;
                 let layer_y = top + 1;
-                let state = if layer_y <= WATER_Y {
+                // Underwater layers always sit at or below the water line, so they are waterlogged.
+                let state = if shallow {
+                    &b.sand_layers_wet[l]
+                } else if underwater {
                     &b.gravel_layers_wet[l]
-                } else if underwater || beach {
+                } else if beach {
                     &b.sand_layers[l]
                 } else if clover {
                     &b.clover_layers[l]
@@ -189,9 +202,10 @@ pub fn generate(catalog: &Catalog, opts: &TestWorldOptions) -> Result<TestWorld>
     let cell = 40;
     for gx in 0..size / cell {
         for gz in 0..size / cell {
-            let x = gx * cell + rng.range(8, cell - 8);
-            let z = gz * cell + rng.range(8, cell - 8);
-            if x < 8 || z < 8 || x >= size - 8 || z >= size - 8 {
+            // Crowns reach about 10 blocks out from the trunk.
+            let x = gx * cell + rng.range(11, cell - 11);
+            let z = gz * cell + rng.range(11, cell - 11);
+            if x < 11 || z < 11 || x >= size - 11 || z >= size - 11 {
                 continue;
             }
             if (x - spawn_xz.0).abs() < 10 && (z - spawn_xz.1).abs() < 10 {
@@ -252,68 +266,69 @@ pub fn generate(catalog: &Catalog, opts: &TestWorldOptions) -> Result<TestWorld>
     })
 }
 
-/// An oak: a full-log trunk, a thinner trunk of large branches above it, horizontal limbs
-/// tapering from large to small branches, and leaf clusters at the limb ends and the top.
+const DIRS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+
+fn piece(name: &str) -> BlockState {
+    // Connections are filled in later by `connect_branches`.
+    BlockState {
+        name: name.to_string(),
+        props: vec![],
+    }
+}
+
+/// An oak built the way Conquest builders do it: a tapering trunk (full logs, a 12 px pillar,
+/// then large-branch posts), limbs that run out and climb while thinning from large to small
+/// branches and fork at the ends, and loose leaf clumps on the twig ends, so the branch
+/// structure stays visible under and between them.
 fn build_oak(world: &mut World, b: &Blocks, rng: &mut Rng, x: i32, base: i32, z: i32) {
-    let trunk = rng.range(4, 6);
-    for y in base..base + trunk {
+    let big = rng.unit() < 0.65;
+    let logs = if big { rng.range(3, 4) } else { 2 };
+    let pillars = rng.range(1, 2);
+    let posts = if big { rng.range(4, 5) } else { 3 };
+    for y in base..base + logs {
         world.set(x, y, z, &b.log);
     }
-    let crown_base = base + trunk;
-    let crown = rng.range(3, 4);
-    let large = |w: &mut World, x, y, z| {
-        w.set(
-            x,
-            y,
-            z,
-            &BlockState {
-                name: b.large_branch.clone(),
-                props: vec![],
-            },
-        )
-    };
-    for y in crown_base..crown_base + crown {
-        large(world, x, y, z);
+    for y in base + logs..base + logs + pillars {
+        world.set(x, y, z, &b.pillar);
+    }
+    let crown = base + logs + pillars;
+    for y in crown..crown + posts {
+        world.set(x, y, z, &piece(&b.large_branch));
     }
 
-    let mut tips = vec![(x, crown_base + crown - 1, z)];
-    let dirs = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    // One limb per side, at different heights so limbs never stack into walls.
+    let mut tips = Vec::new();
+    let sides = if big { 4 } else { 3 };
     let start = rng.range(0, 3) as usize;
-    for i in 0..4 {
-        if i == 3 && rng.unit() < 0.5 {
-            continue;
-        }
-        let (dx, dz) = dirs[(start + i) % 4];
-        let ly = crown_base + (i as i32 % crown.min(3));
-        let len = rng.range(2, 4);
-        for k in 1..=len {
-            let name = if k == 1 {
-                &b.large_branch
-            } else if k < len {
-                &b.branch
-            } else {
-                &b.small_branch
-            };
-            world.set(
-                x + dx * k,
-                ly,
-                z + dz * k,
-                &BlockState {
-                    name: name.clone(),
-                    props: vec![],
-                },
-            );
-        }
-        tips.push((x + dx * len, ly, z + dz * len));
+    for i in 0..sides {
+        let y = crown + i as i32 * (posts - 1) / sides as i32;
+        grow_limb(world, b, rng, &mut tips, (x, y, z), (start + i) % 4, big);
     }
 
+    // The leader carries on up, splits into two twigs and gets the top clump.
+    let lead = rng.range(1, 2);
+    for k in 0..lead {
+        world.set(x, crown + posts + k, z, &piece(&b.branch));
+    }
+    let ty = crown + posts + lead - 1;
+    tips.push((x, ty + 1, z));
+    for k in 0..2 {
+        let (dx, dz) = DIRS[(start + 1 + 2 * k) % 4];
+        if place(world, x + dx, ty, z + dz, &b.small_branch) {
+            tips.push((x + dx, ty, z + dz));
+        }
+    }
+
+    // Loose, flattened clumps above the twig ends; the space under them stays open.
+    let rx = if big { 2.4 } else { 1.9 };
     for (tx, ty, tz) in tips {
-        let r = 2 + (rng.unit() < 0.5) as i32;
+        let r = rx as i32 + 1;
         for dx in -r..=r {
-            for dy in -1..=r {
-                for dz in -r..=r {
-                    let d2 = dx * dx + dz * dz + (dy * dy * 2);
-                    if d2 > r * r + 1 || (d2 > r * r - 2 && rng.unit() < 0.35) {
+            for dz in -r..=r {
+                for dy in -1..=2 {
+                    let d = (dx * dx + dz * dz) as f64 / (rx * rx)
+                        + (dy as f64 - 0.4).powi(2) / (1.5 * 1.5);
+                    if d > 1.0 || (d > 0.45 && rng.unit() < 0.3) {
                         continue;
                     }
                     let (px, py, pz) = (tx + dx, ty + dy, tz + dz);
@@ -326,8 +341,74 @@ fn build_oak(world: &mut World, b: &Blocks, rng: &mut Rng, x: i32, base: i32, z:
     }
 }
 
+/// Places a branch piece if the spot is free. Connections are filled in by `connect_branches`.
+fn place(world: &mut World, x: i32, y: i32, z: i32, name: &str) -> bool {
+    if !world.get(x, y, z).is_air() {
+        return false;
+    }
+    world.set(x, y, z, &piece(name));
+    true
+}
+
+/// One limb: a thick stretch out of the trunk, a climb, a thinner stretch further out (sometimes
+/// with a sideways jog), then a fork into two small twigs whose ends get leaf clumps.
+fn grow_limb(
+    world: &mut World,
+    b: &Blocks,
+    rng: &mut Rng,
+    tips: &mut Vec<(i32, i32, i32)>,
+    from: (i32, i32, i32),
+    dir: usize,
+    big: bool,
+) {
+    let (mut cx, mut cy, mut cz) = from;
+    let (dx, dz) = DIRS[dir];
+    let side = DIRS[(dir + if rng.unit() < 0.5 { 1 } else { 3 }) % 4];
+
+    let (inner, outer) = if big {
+        (rng.range(2, 3), rng.range(2, 3))
+    } else {
+        (rng.range(1, 2), rng.range(1, 2))
+    };
+
+    for _ in 0..inner {
+        cx += dx;
+        cz += dz;
+        place(world, cx, cy, cz, &b.large_branch);
+    }
+    for _ in 0..rng.range(1, 2) {
+        cy += 1;
+        place(world, cx, cy, cz, &b.branch);
+    }
+    for k in 0..outer {
+        let (sx, sz) = if k == 1 && rng.unit() < 0.4 {
+            side
+        } else {
+            (dx, dz)
+        };
+        cx += sx;
+        cz += sz;
+        place(world, cx, cy, cz, &b.branch);
+    }
+
+    // Fork: one twig carries on outwards, the other goes to the side.
+    let (ox, oz) = (cx + dx, cz + dz);
+    if place(world, ox, cy, oz, &b.small_branch) {
+        tips.push((ox, cy, oz));
+    }
+    let (fx, fz) = (cx - side.0, cz - side.1);
+    if place(world, fx, cy, fz, &b.small_branch) {
+        if rng.unit() < 0.5 && place(world, fx - side.0, cy, fz - side.1, &b.small_branch) {
+            tips.push((fx - side.0, cy, fz - side.1));
+        } else {
+            tips.push((fx, cy, fz));
+        }
+    }
+}
+
 /// Fills in the connection properties the game would compute on placement: an arm towards
-/// every neighbouring branch piece, and a post (`up`) when the block below is sturdy or a branch.
+/// every neighbouring branch piece, and a post (`up`) when the block below is sturdy, a branch
+/// or a log pillar.
 fn connect_branches(world: &mut World, catalog: &Catalog) {
     let is_branch = |s: &BlockState| catalog.is_a(&s.name, "BranchLarge");
     let sturdy = |s: &BlockState| {
@@ -354,7 +435,9 @@ fn connect_branches(world: &mut World, catalog: &Catalog) {
         let name = world.get(x, y, z).name.clone();
         let flag = |v: bool| if v { "true" } else { "false" };
         let below = world.get(x, y - 1, z);
-        let up = is_branch(below) || sturdy(below);
+        // A pillar's top face is not sturdy, so the game itself would drop the post on the
+        // next block update; keep it so the trunk reads as one piece.
+        let up = is_branch(below) || sturdy(below) || catalog.is_a(&below.name, "LogPillar");
         let north = is_branch(world.get(x, y, z - 1));
         let east = is_branch(world.get(x + 1, y, z));
         let south = is_branch(world.get(x, y, z + 1));
