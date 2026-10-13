@@ -9,12 +9,12 @@
 //! alone: round trunks of logs, vertical slabs, vertical quarters and pillars; limbs of bark
 //! and large, normal and small branches; leaves in loose clumps. Then [`Trees::build`] fits
 //! the plan to the world: it stretches the trunk down to the ground of every column it covers,
-//! works out each branch's arms and post the way Conquest does, and writes the blocks. The
-//! world is only read in the columns being written, and other trees' blocks count as air
-//! there, so a tree's shape comes from its request and the ground alone. Where crowns
-//! overlap, the tree built later wins the shared cell: its leaves and wood replace leaves, but
-//! nothing replaces wood. The engine builds trees in a fixed order, so neighbouring pieces of
-//! the map agree.
+//! leaves out any wood the ground cuts off from the rest, works out each branch's arms and
+//! post the way Conquest does, and writes the blocks. The world is only read in the columns
+//! being written, and other trees' blocks count as air there, so a tree's shape comes from
+//! its request and the ground alone. Where crowns overlap, the tree built later wins the
+//! shared cell: its leaves and wood replace leaves, but nothing replaces wood. The engine
+//! builds trees in a fixed order, so neighbouring pieces of the map agree.
 //!
 //! `tools/tree-render` draws side views of every species with [`render`].
 
@@ -22,6 +22,8 @@ mod kit;
 mod plan;
 pub mod render;
 mod species;
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -105,6 +107,7 @@ impl Trees {
         let mut plan = species::plan(req);
         let origin = (req.x, req.y, req.z);
         let replace = self.settle(&mut plan, &*sink, origin);
+        self.cut_off(&mut plan, &*sink, origin, &replace);
         let water = self.kits.water;
         let mut writes = Vec::new();
         for (lx, ly, lz, cell) in plan.cells() {
@@ -148,9 +151,11 @@ impl Trees {
     }
 
     /// Stretches the bottom of the trunk down to the ground in every column it covers, and
-    /// decides how it meets a Conquest layer block there: pillars and quarters stand on the
-    /// layer with `down=true` (reaching into it), anything else replaces the layer block so
-    /// no gap shows under it. Returns the layer cells the trunk may replace.
+    /// decides how it meets a Conquest layer block there. The layer stays, and the bottom
+    /// piece stands on it reaching down into it (`down=true`, or `extension_toggle=true` on a
+    /// vertical slab; a branch post becomes a pillar as wide). Only a full block takes the
+    /// layer's place, sunk into the ground: a thinner piece there would leave a pit round
+    /// itself. Returns the layer cells the trunk replaces.
     fn settle(
         &self,
         plan: &mut Plan,
@@ -164,6 +169,7 @@ impl Trees {
             }
         }
         let mut replace = Vec::new();
+        let mut raised = Vec::new();
         for (x, low, z, cell) in feet {
             let (wx, wz) = (x + ox, z + oz);
             let (from, to) = (low + oy + 3, low + oy - species::BELOW + 1);
@@ -171,35 +177,130 @@ impl Trees {
                 continue;
             };
             let g = g - oy;
-            let partial = layers < 8;
-            // Below a root, only the post carries on down.
             let foot = Cell {
                 flags: cell.flags & !FOOT,
                 links: 0,
                 ..cell
             };
-            let bottom = if partial && !cell.piece.has_down() {
-                g
-            } else {
-                g + 1
-            };
-            for y in bottom..low {
+            for y in g + 1..low {
                 plan.set(x, y, z, foot);
             }
-            if partial {
-                let mut at = plan.get(x, bottom, z);
-                if at.piece.has_down() {
-                    at.flags |= DOWN;
-                } else {
-                    replace.push((wx, g + oy, wz));
-                    if let Piece::Slab(..) = at.piece {
-                        at.piece = Piece::Wood;
-                    }
+            // What the ground has swallowed is never written: leave it out of the plan, so
+            // nothing counts on it.
+            for y in low..g + (layers >= 8) as i32 {
+                plan.set(x, y, z, Cell::default());
+            }
+            if layers >= 8 {
+                continue;
+            }
+            // Where the trunk starts in the layer block, its first piece (the flared foot)
+            // moves up onto it in place of the second, unless that one joins a limb.
+            let in_layer = plan.get(x, g, z);
+            let above = plan.get(x, g + 1, z);
+            let mut bottom = if in_layer.piece.is_wood() && above.links == 0 {
+                in_layer
+            } else {
+                Cell {
+                    flags: above.flags | in_layer.flags & STUMP,
+                    ..above
                 }
-                plan.set(x, bottom, z, at);
+            };
+            bottom.flags &= !FOOT;
+            match bottom.piece {
+                Piece::Log | Piece::Wood => {
+                    plan.set(x, g, z, bottom);
+                    replace.push((wx, g + oy, wz));
+                    continue;
+                }
+                Piece::Branch(t) if bottom.links == 0 => {
+                    bottom.piece = Piece::post_pillar(t);
+                    bottom.flags |= DOWN;
+                }
+                // A limb lying on the ground rests on a block of bark sunk in its place.
+                Piece::Branch(_) => {
+                    let bark = Cell {
+                        piece: Piece::Wood,
+                        links: 0,
+                        ..bottom
+                    };
+                    plan.set(x, g, z, bark);
+                    replace.push((wx, g + oy, wz));
+                    continue;
+                }
+                p if p.has_down() => bottom.flags |= DOWN,
+                _ => continue,
+            }
+            plan.set(x, g + 1, z, bottom);
+            plan.set(x, g, z, Cell::default());
+            raised.push([x, g + 1, z]);
+        }
+        // The ground may have swallowed what a raised piece of the foot leant on.
+        plan.prune_apart(&raised);
+        replace
+    }
+
+    /// Leaves out the wood the ground cuts off from the rest of the tree: past a low limb
+    /// dipping into a bank, a stick lying loose in the grass. Cells side by side make one
+    /// piece of wood here, and one reaching down meets its neighbours on the level below.
+    fn cut_off(
+        &self,
+        plan: &mut Plan,
+        sink: &dyn BlockSink,
+        (ox, oy, oz): (i32, i32, i32),
+        replace: &[(i32, i32, i32)],
+    ) {
+        let mut wood: HashMap<[i32; 3], (bool, usize)> = HashMap::new();
+        let mut cells = Vec::new();
+        for (x, y, z, cell) in plan.cells() {
+            let at = (x + ox, y + oy, z + oz);
+            let buried = self.is_ground(sink.get(at.0, at.1, at.2)) && !replace.contains(&at);
+            if cell.piece.is_wood() && !buried {
+                wood.insert([x, y, z], (cell.flags & DOWN != 0, usize::MAX));
+                cells.push([x, y, z]);
             }
         }
-        replace
+        let mut sizes = Vec::new();
+        for &first in &cells {
+            if wood[&first].1 != usize::MAX {
+                continue;
+            }
+            let part = sizes.len();
+            let mut todo = vec![first];
+            wood.get_mut(&first).unwrap().1 = part;
+            let mut size = 0;
+            while let Some([x, y, z]) = todo.pop() {
+                size += 1;
+                let down = wood[&[x, y, z]].0;
+                let mut next = vec![[x, y - 1, z], [x, y + 1, z]];
+                for (dx, dz) in SIDES {
+                    next.push([x + dx, y, z + dz]);
+                    if down {
+                        next.push([x + dx, y - 1, z + dz]);
+                    }
+                    if wood.get(&[x + dx, y + 1, z + dz]).is_some_and(|w| w.0) {
+                        next.push([x + dx, y + 1, z + dz]);
+                    }
+                }
+                for n in next {
+                    if let Some(w) = wood.get_mut(&n) {
+                        if w.1 == usize::MAX {
+                            w.1 = part;
+                            todo.push(n);
+                        }
+                    }
+                }
+            }
+            sizes.push(size);
+        }
+        // The first of the largest, whatever order the map keeps its cells in.
+        let Some(main) = (0..sizes.len()).rev().max_by_key(|&p| sizes[p]) else {
+            return;
+        };
+        for (c, (_, part)) in wood {
+            if part != main {
+                plan.set(c[0], c[1], c[2], Cell::default());
+            }
+        }
     }
 
     /// Whether a block is ground a tree can stand on or a branch rest on: anything but air,
@@ -465,5 +566,227 @@ mod tests {
             .filter(|&(x, z)| a.column(x, z) != b.column(x, z))
             .count();
         assert_eq!(differ, 0, "{differ} shared columns differ");
+    }
+
+    /// Ground like the gallery world's: gently uneven, with a Conquest grass layer of 1 to 7
+    /// on top of almost every column. Returns the area and the cells holding a layer.
+    fn layered_ground<'p>(
+        b: &Blocks,
+        palette: &'p Palette,
+        rect: Rect,
+    ) -> (Area<'p>, std::collections::HashSet<(i32, i32, i32)>) {
+        let grass = b
+            .id("minecraft:grass_block", &[("snowy", "false")])
+            .unwrap();
+        let mut area = Area::new(rect, palette);
+        let mut layers = std::collections::HashSet::new();
+        for (x, z) in rect.columns() {
+            let g = ground_height(x, z);
+            let top = g.floor() as i32;
+            area.fill_column(x, z, 50, top + 1, grass);
+            let l = ((g - g.floor()) * 8.0) as usize;
+            if l > 0 {
+                let id = b
+                    .id(
+                        "conquest:grass_block_layer",
+                        &[("layers", &l.to_string()), ("waterlogged", "false")],
+                    )
+                    .unwrap();
+                area.set(x, top + 1, z, id);
+                layers.insert((x, top + 1, z));
+            }
+        }
+        (area, layers)
+    }
+
+    fn ground_height(x: i32, z: i32) -> f32 {
+        64.0 + 0.7 * ((x as f32 * 0.21).sin() + (z as f32 * 0.17).cos())
+            + 0.4 * ((x + z) as f32 * 0.09).sin()
+    }
+
+    /// What is wrong with the wood of the trees in `area`: pieces that touch neither the rest
+    /// of their tree nor the ground, and pieces other than full blocks put in place of a
+    /// Conquest layer, which leave a pit round them.
+    fn wood_problems(
+        trees: &Trees,
+        area: &Area,
+        catalog: &Catalog,
+        layer_cells: &std::collections::HashSet<(i32, i32, i32)>,
+    ) -> Vec<String> {
+        /// A box of a block model: its cell, its corners in world pixels, and whether it is
+        /// wood.
+        type ModelBox = ((i32, i32, i32), [f32; 3], [f32; 3], bool);
+        let palette = area.palette();
+        let rect = area.rect;
+        let state = |id| palette.with(id, |s| s.to_string());
+        let mut boxes: Vec<ModelBox> = Vec::new();
+        let mut at: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+        let mut problems = Vec::new();
+        let wood: Vec<(i32, i32, i32)> = rect
+            .columns()
+            .flat_map(|(x, z)| (50..160).map(move |y| (x, y, z)))
+            .filter(|&(x, y, z)| {
+                let id = area.get(x, y, z);
+                trees.kits.is_tree(id) && !trees.kits.is_leaves(id)
+            })
+            .collect();
+        let mut near = std::collections::HashSet::new();
+        for &(x, y, z) in &wood {
+            for d in 0..27 {
+                near.insert((x + d % 3 - 1, y + d / 3 % 3 - 1, z + d / 9 - 1));
+            }
+        }
+        for &c in &near {
+            if !rect.contains(c.0, c.2) {
+                continue;
+            }
+            let id = area.get(c.0, c.1, c.2);
+            if id == AIR || trees.kits.is_leaves(id) {
+                continue;
+            }
+            let ground = !trees.kits.is_tree(id);
+            let solid = palette.with(id, |s| render::solid_boxes(s, catalog));
+            if !ground && layer_cells.contains(&c) {
+                let full = solid.len() == 1 && solid[0] == ([0.0; 3], [16.0; 3]);
+                if !full {
+                    problems.push(format!("pit round {} at {c:?}", state(id)));
+                }
+            }
+            for (lo, hi) in solid {
+                let o = [c.0 as f32 * 16.0, c.1 as f32 * 16.0, c.2 as f32 * 16.0];
+                at.entry(c).or_default().push(boxes.len());
+                boxes.push((
+                    c,
+                    [o[0] + lo[0], o[1] + lo[1], o[2] + lo[2]],
+                    [o[0] + hi[0], o[1] + hi[1], o[2] + hi[2]],
+                    ground,
+                ));
+            }
+        }
+        // Union-find over the wood boxes: a tree is one piece of wood, which stands on the
+        // ground. (Through the ground doesn't count, or a lone post would pass.)
+        let mut parent: Vec<usize> = (0..boxes.len()).collect();
+        fn find(p: &mut [usize], mut i: usize) -> usize {
+            while p[i] != i {
+                p[i] = p[p[i]];
+                i = p[i];
+            }
+            i
+        }
+        let touch = |a: usize, b: usize| {
+            let (_, alo, ahi, _) = boxes[a];
+            let (_, blo, bhi, _) = boxes[b];
+            let mut overlapping = 0;
+            for k in 0..3 {
+                let o = ahi[k].min(bhi[k]) - alo[k].max(blo[k]);
+                if o < -0.01 {
+                    return false;
+                }
+                if o > 0.25 {
+                    overlapping += 1;
+                }
+            }
+            overlapping >= 2
+        };
+        let mut grounded = std::collections::HashSet::new();
+        let mut on_ground = Vec::new();
+        for i in 0..boxes.len() {
+            let (c, _, _, ground) = boxes[i];
+            if ground {
+                continue;
+            }
+            for d in 0..27 {
+                let n = (c.0 + d % 3 - 1, c.1 + d / 3 % 3 - 1, c.2 + d / 9 - 1);
+                for &j in at.get(&n).map(Vec::as_slice).unwrap_or(&[]) {
+                    if boxes[j].3 {
+                        if touch(i, j) {
+                            on_ground.push(i);
+                        }
+                    } else if n == c || touch(i, j) {
+                        // The boxes of one block are one piece.
+                        let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                        parent[a] = b;
+                    }
+                }
+            }
+        }
+        for i in on_ground {
+            grounded.insert(find(&mut parent, i));
+        }
+        let mut parts: HashMap<usize, Vec<(i32, i32, i32)>> = HashMap::new();
+        for i in (0..boxes.len()).filter(|&i| !boxes[i].3) {
+            let r = find(&mut parent, i);
+            parts.entry(r).or_default().push(boxes[i].0);
+        }
+        let main = parts
+            .iter()
+            .max_by_key(|(_, cells)| cells.len())
+            .map(|(&r, _)| r);
+        for (r, mut cells) in parts {
+            cells.dedup();
+            if Some(r) == main {
+                if !grounded.contains(&r) {
+                    problems.push("the tree doesn't reach the ground".into());
+                }
+                continue;
+            }
+            let c = cells[0];
+            problems.push(format!(
+                "{} at {c:?} and {} more cells come apart from the tree",
+                state(area.get(c.0, c.1, c.2)),
+                cells.len() - 1
+            ));
+        }
+        problems
+    }
+
+    /// No species leaves wood hanging in the air or pits in layer ground, at any size, on
+    /// layer ground and on full blocks.
+    #[test]
+    fn wood_holds_together() {
+        let Some(catalog) = catalog() else {
+            eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+            return;
+        };
+        let palette = Palette::new();
+        let b = Blocks::new(&catalog, &palette);
+        let trees = Trees::new(&b).unwrap();
+        let grass = b
+            .id("minecraft:grass_block", &[("snowy", "false")])
+            .unwrap();
+        let mut problems = Vec::new();
+        for &species in Species::ALL {
+            for size in [0.05, 0.25, 0.5, 0.75, 1.0] {
+                for seed in 0..8 {
+                    let rect = Rect::new(-18, -18, 19, 19);
+                    let flat = seed % 2 == 1;
+                    let (mut area, layers) = if flat {
+                        let mut area = Area::new(rect, &palette);
+                        for (x, z) in rect.columns() {
+                            area.fill_column(x, z, 50, 65, grass);
+                        }
+                        (area, Default::default())
+                    } else {
+                        layered_ground(&b, &palette, rect)
+                    };
+                    let req = TreeRequest {
+                        species,
+                        x: 0,
+                        y: ground_height(0, 0).floor() as i32 + 1,
+                        z: 0,
+                        size,
+                        seed,
+                    };
+                    trees.build(&req, &mut area);
+                    for p in wood_problems(&trees, &area, &catalog, &layers) {
+                        problems.push(format!("{species:?} {size} seed {seed}: {p}"));
+                    }
+                }
+            }
+        }
+        for p in problems.iter().take(400) {
+            eprintln!("{p}");
+        }
+        assert!(problems.is_empty(), "{} problems", problems.len());
     }
 }

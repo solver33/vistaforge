@@ -7,8 +7,11 @@
 //! ```text
 //! cargo run --release --manifest-path tools/tree-render/Cargo.toml -- \
 //!     --catalog catalog.json --out renders/ [--species oak,birch] [--seed n] [--yaw degrees]
-//!     [--scale px] [--world <saves folder>] [--scene x,z,size [--preset id]]
+//!     [--scale px] [--world <saves folder>] [--scene x,z,size [--preset id]] [--feet]
 //! ```
+//!
+//! `--feet` draws only the lowest blocks round each trunk, close up, to check how trees meet
+//! the ground.
 
 use std::path::{Path, PathBuf};
 
@@ -83,8 +86,10 @@ fn main() -> Result<()> {
         std::fs::write(&path, img.png()?)?;
         println!("{} ({}×{})", path.display(), img.width, img.height);
     }
-    for (species, img) in gallery(&catalog, &species, seed, &view)? {
-        let path = out.join(format!("trees-{species}.png"));
+    let feet = args.iter().any(|a| a == "--feet");
+    for (species, img) in gallery(&catalog, &species, seed, &view, feet)? {
+        let name = if feet { "feet" } else { "trees" };
+        let path = out.join(format!("{name}-{species}.png"));
         std::fs::write(&path, img.png()?)?;
         println!("{} ({}×{})", path.display(), img.width, img.height);
     }
@@ -178,7 +183,7 @@ fn gallery_world(
                 cz,
                 &area,
                 &palette,
-                &|_, _| "minecraft:plains",
+                &|_, _, _| "minecraft:plains",
                 &mut scratch,
             );
             region.add(cx, cz, &compress_chunk(&tag)?)?;

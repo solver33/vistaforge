@@ -220,6 +220,22 @@ fn add3(a: V, b: V) -> V {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
+/// The solid boxes of a block state in pixels, 0..16 being its own cell (leaves and plants
+/// left out, bent pieces boxed whole): what tests use to check that wood holds together.
+#[cfg(test)]
+pub(crate) fn solid_boxes(state: &BlockState, catalog: &Catalog) -> Vec<(V, V)> {
+    let model = Model::of(state, catalog);
+    if model.leaves {
+        return Vec::new();
+    }
+    model
+        .shapes
+        .iter()
+        .filter(|s| matches!(s.fill, Fill::Solid))
+        .map(Shape::bounds)
+        .collect()
+}
+
 /// The shapes and colours of one block state.
 struct Model {
     shapes: Vec<Shape>,
@@ -301,7 +317,13 @@ impl Model {
         let top = info.and_then(|b| b.top_rgb.or(b.side_rgb)).unwrap_or(side);
         let name = state.name.as_str();
         let layer = prop(state, "layer").unwrap_or(1) as usize;
-        let down = if is_true(state, "down") { -16.0 } else { 0.0 };
+        // `down` (and `extension_toggle` on vertical slabs) repeat the piece in the block below,
+        // reaching through a Conquest layer to the ground.
+        let down = if is_true(state, "down") || is_true(state, "extension_toggle") {
+            -16.0
+        } else {
+            0.0
+        };
         let leafy = [
             "leaves",
             "needles",
@@ -346,7 +368,7 @@ impl Model {
         } else if name.contains("_log_vertical_slab") {
             let t = super::plan::SLAB_PX[layer.clamp(1, 4) - 1] as f32;
             // Facing north lies against the south side.
-            let q = Shape::new([0.0, 0.0, 16.0 - t], [16.0, 16.0, 16.0]);
+            let q = Shape::new([0.0, down, 16.0 - t], [16.0, 16.0, 16.0]);
             shapes.push(q.quarter_turns(facing_turns(state)));
         } else if name.ends_with("_large_branch") {
             shapes = branch_shapes(state, 0);
@@ -716,7 +738,9 @@ fn shade(model: &Model, hit: &Hit, light: V) -> [u8; 3] {
 }
 
 /// One species at several sizes on a patch of uneven grass, drawn with and without leaves,
-/// with labels. `seed` varies the trees.
+/// with labels. `seed` varies the trees. `top` cuts the view off that many blocks above the
+/// ground, to look closely at the feet.
+#[allow(clippy::too_many_arguments)]
 pub fn sheet(
     trees: &Trees,
     blocks: &Blocks,
@@ -725,6 +749,7 @@ pub fn sheet(
     sizes: &[f32],
     seed: u64,
     view: &View,
+    top: Option<i32>,
 ) -> Result<Image> {
     let grass = blocks.id("minecraft:grass_block", &[("snowy", "false")])?;
     let layers: Vec<BlockId> = (1..=7)
@@ -745,7 +770,10 @@ pub fn sheet(
             size,
             seed: 0,
         });
-        let reach = (crown.ceil() as i32 + 2).min(super::MAX_REACH + 1);
+        let reach = match top {
+            Some(_) => 5,
+            None => (crown.ceil() as i32 + 2).min(super::MAX_REACH + 1),
+        };
         let rect = Rect::new(-reach, -reach, reach + 1, reach + 1);
         let mut area = Area::new(rect, blocks.palette);
         // Gently uneven ground with Conquest layers, as the generator makes it.
@@ -768,7 +796,7 @@ pub fn sheet(
             seed: seed.wrapping_add(n as u64 * 7919),
         };
         trees.build(&req, &mut area);
-        let y1 = 64 + h.ceil() as i32 + 6;
+        let y1 = top.map_or(64 + h.ceil() as i32 + 6, |t| 64 + t);
         let with = render(&area, catalog, rect, 60, y1, view);
         let bare = render(
             &area,
@@ -824,12 +852,14 @@ pub fn sheet(
     Ok(img)
 }
 
-/// Sheets for the given species, one picture each, named by species id.
+/// Sheets for the given species, one picture each, named by species id. With `feet`, only
+/// the lowest blocks round each trunk, close up.
 pub fn gallery(
     catalog: &Catalog,
     species: &[Species],
     seed: u64,
     view: &View,
+    feet: bool,
 ) -> Result<Vec<(String, Image)>> {
     let palette = Palette::new();
     let blocks = Blocks::new(catalog, &palette);
@@ -837,7 +867,8 @@ pub fn gallery(
     let sizes = [0.05, 0.2, 0.4, 0.6, 0.8, 1.0];
     let mut out = Vec::new();
     for &species in species {
-        let img = sheet(&trees, &blocks, catalog, species, &sizes, seed, view)?;
+        let top = feet.then_some(5);
+        let img = sheet(&trees, &blocks, catalog, species, &sizes, seed, view, top)?;
         let id = serde_json::to_string(&species)?
             .trim_matches('"')
             .to_string();
