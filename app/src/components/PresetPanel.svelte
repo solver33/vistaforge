@@ -65,7 +65,12 @@
             <span style:flex-grow={b.share / total} style:background={biomeColor(b.biome)}></span>
           {/each}
         </span>
-        <span class="pname">{p.name}</span>
+        <span class="pname">
+          {p.name}
+          {#if p.world_height === 'tall'}
+            <span class="tall" title="Made for a tall world (up to Y 2031); picking it switches World height to Tall">Tall</span>
+          {/if}
+        </span>
         <span class="pdesc">{p.description}</span>
       </button>
     {:else}
@@ -132,8 +137,21 @@
   }
 
   .pname {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     padding: 2px 8px 0;
     font-weight: 600;
+  }
+
+  .tall {
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 14px;
+    padding: 0 5px;
+    border-radius: 7px;
+    color: var(--accent);
+    background: var(--accent-soft);
   }
 
   .pdesc {

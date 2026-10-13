@@ -176,6 +176,7 @@ class AppState {
     return (
       shares(s.biomes) !== shares(p.biomes) ||
       s.sea_level !== p.sea_level ||
+      (p.world_height !== undefined && s.world_height !== p.world_height) ||
       Object.entries(p.sliders).some(([k, v]) => Math.abs((s.sliders[k] ?? v) - v) > 1e-6)
     );
   });
@@ -239,6 +240,7 @@ class AppState {
       s.biomes = clone(p.biomes);
       s.sliders = { ...base.sliders, ...p.sliders };
       s.sea_level = p.sea_level;
+      if (p.world_height) s.world_height = p.world_height;
     }
     return s;
   }
@@ -302,6 +304,11 @@ class AppState {
     s.biomes = clone(p.biomes);
     s.sliders = { ...(this.info?.defaults.sliders ?? {}), ...p.sliders };
     s.sea_level = p.sea_level;
+    // A preset made for a tall world brings its height; the rest keep the one chosen.
+    if (p.world_height) {
+      s.world_height = p.world_height;
+      clampHeights(s);
+    }
     this.commit();
   }
 
@@ -451,8 +458,12 @@ class AppState {
   /** Starts a fresh map from the current preset, keeping the name, size, height and folders. */
   newMap(): void {
     if (!this.info) return;
-    const keep = { name: this.settings.name, size: this.settings.size, world_height: this.settings.world_height };
     const preset = this.currentPreset ?? this.info.presets[0];
+    const keep = {
+      name: this.settings.name,
+      size: this.settings.size,
+      world_height: preset?.world_height ?? this.settings.world_height,
+    };
     this.commit();
     this.settings = { ...this.fromPreset(preset, this.info.defaults), ...keep, seed: randomSeed() };
     this.selected = null;
