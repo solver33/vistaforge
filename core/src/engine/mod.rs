@@ -24,7 +24,7 @@ use crate::settings::WorldSettings;
 use crate::sink::{Blocks, Palette};
 use crate::surface::Surface;
 use crate::terrain::{Quality, Terrain};
-use crate::trees::{self, Species, Trees};
+use crate::trees::{self, Species, TreeRequest, Trees};
 use crate::world::{Area, MIN_Y};
 
 /// Side of a generation unit in blocks (4×4 chunks).
@@ -217,11 +217,29 @@ impl<'c> Generator<'c> {
             colors.push(color);
             biomes.push(col.biome);
         }
+        // Trees are planned in parallel strips; each strip keeps only the trunks inside it, so
+        // together they hold the same trees as planning the whole map at once.
         let column = |x: i32, z: i32| self.terrain.column(x, z);
-        let trees = self
-            .decor
-            .plan_trees(Rect::square(size as i32), &column)
+        let strips = (workers * 4).min(size as usize / 16).max(1);
+        let strip = (size as usize).div_ceil(strips) as i32;
+        let planned: Vec<Vec<TreeRequest>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..strips as i32)
+                .map(|k| {
+                    let rect = Rect::new(
+                        0,
+                        k * strip,
+                        size as i32,
+                        ((k + 1) * strip).min(size as i32),
+                    );
+                    let column = &column;
+                    scope.spawn(move || self.decor.plan_trees(rect, column))
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let trees = planned
             .iter()
+            .flatten()
             .map(|t| {
                 let (height, crown) = self.trees.shape(t);
                 PreviewTree {
