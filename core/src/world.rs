@@ -1,152 +1,111 @@
-//! In-memory block storage for a generated area, organised like Minecraft: 16×16 chunks of
-//! 16×16×16 sections, covering Y −64..319 (Minecraft 1.20.1 overworld).
+//! World dimensions (Minecraft 1.20.1 overworld) and [`Area`], the in-memory buffer one piece
+//! of the map is generated into.
 
-use std::collections::{BTreeMap, HashMap};
-
-use crate::catalog::BlockState;
+use crate::column::Rect;
+use crate::sink::{BlockId, BlockSink, Palette, AIR};
 
 pub const MIN_Y: i32 = -64;
 pub const HEIGHT: i32 = 384;
+pub const MAX_Y: i32 = MIN_Y + HEIGHT - 1;
 pub const SECTIONS: usize = (HEIGHT / 16) as usize;
 pub const MIN_SECTION: i32 = MIN_Y / 16;
 
-/// Interns block states so the world stores small ids. Id 0 is always air.
-pub struct Palette {
-    states: Vec<BlockState>,
-    ids: HashMap<BlockState, u32>,
+/// Full-height block storage for a rectangle of columns. Each column is contiguous, bottom up.
+pub struct Area<'p> {
+    pub rect: Rect,
+    palette: &'p Palette,
+    blocks: Vec<BlockId>,
 }
 
-impl Default for Palette {
-    fn default() -> Self {
-        let mut p = Self {
-            states: Vec::new(),
-            ids: HashMap::new(),
-        };
-        p.id(&BlockState::air());
-        p
-    }
-}
-
-impl Palette {
-    pub fn id(&mut self, state: &BlockState) -> u32 {
-        if let Some(id) = self.ids.get(state) {
-            return *id;
-        }
-        let id = self.states.len() as u32;
-        self.states.push(state.clone());
-        self.ids.insert(state.clone(), id);
-        id
-    }
-
-    pub fn state(&self, id: u32) -> &BlockState {
-        &self.states[id as usize]
-    }
-
-    pub fn len(&self) -> usize {
-        self.states.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.states.is_empty()
-    }
-}
-
-/// 4096 block ids in Minecraft's order: index = (y * 16 + z) * 16 + x.
-pub type Section = Box<[u32; 4096]>;
-
-#[derive(Default)]
-pub struct Chunk {
-    /// Index 0 is the section at Y −64.
-    pub sections: [Option<Section>; SECTIONS],
-}
-
-pub struct World {
-    pub palette: Palette,
-    pub chunks: BTreeMap<(i32, i32), Chunk>,
-    pub biome: String,
-}
-
-impl Default for World {
-    fn default() -> Self {
+impl<'p> Area<'p> {
+    pub fn new(rect: Rect, palette: &'p Palette) -> Self {
         Self {
-            palette: Palette::default(),
-            chunks: BTreeMap::new(),
-            biome: "minecraft:plains".into(),
+            rect,
+            palette,
+            blocks: vec![AIR; rect.area() * HEIGHT as usize],
         }
     }
-}
 
-impl World {
-    pub fn new() -> Self {
-        Self::default()
+    fn column_start(&self, x: i32, z: i32) -> Option<usize> {
+        self.rect.contains(x, z).then(|| {
+            ((x - self.rect.x0) as usize * self.rect.depth() as usize + (z - self.rect.z0) as usize)
+                * HEIGHT as usize
+        })
     }
 
-    fn locate(x: i32, y: i32, z: i32) -> Option<((i32, i32), usize, usize)> {
-        if !(MIN_Y..MIN_Y + HEIGHT).contains(&y) {
+    fn index(&self, x: i32, y: i32, z: i32) -> Option<usize> {
+        if !(MIN_Y..=MAX_Y).contains(&y) {
             return None;
         }
-        let section = ((y - MIN_Y) >> 4) as usize;
-        let index = ((((y & 15) << 4) | (z & 15)) << 4 | (x & 15)) as usize;
-        Some(((x >> 4, z >> 4), section, index))
+        self.column_start(x, z).map(|c| c + (y - MIN_Y) as usize)
     }
 
-    pub fn set(&mut self, x: i32, y: i32, z: i32, state: &BlockState) {
-        let Some((chunk, section, index)) = Self::locate(x, y, z) else {
+    /// The blocks of one column, bottom (Y = −64) first.
+    pub fn column(&self, x: i32, z: i32) -> &[BlockId] {
+        let c = self.column_start(x, z).expect("column outside the area");
+        &self.blocks[c..c + HEIGHT as usize]
+    }
+
+    /// Y of the highest non-air block in a column, if any.
+    pub fn top(&self, x: i32, z: i32) -> Option<i32> {
+        self.column(x, z)
+            .iter()
+            .rposition(|&b| b != AIR)
+            .map(|i| MIN_Y + i as i32)
+    }
+}
+
+impl BlockSink for Area<'_> {
+    fn get(&self, x: i32, y: i32, z: i32) -> BlockId {
+        self.index(x, y, z).map(|i| self.blocks[i]).unwrap_or(AIR)
+    }
+
+    fn set(&mut self, x: i32, y: i32, z: i32, id: BlockId) {
+        if let Some(i) = self.index(x, y, z) {
+            self.blocks[i] = id;
+        }
+    }
+
+    fn palette(&self) -> &Palette {
+        self.palette
+    }
+
+    fn fill_column(&mut self, x: i32, z: i32, y0: i32, y1: i32, id: BlockId) {
+        let (y0, y1) = (y0.max(MIN_Y), y1.min(MAX_Y + 1));
+        if y0 >= y1 {
             return;
-        };
-        let id = self.palette.id(state);
-        let chunk = self.chunks.entry(chunk).or_default();
-        let section = chunk.sections[section].get_or_insert_with(|| Box::new([0u32; 4096]));
-        section[index] = id;
-    }
-
-    pub fn set_id(&mut self, x: i32, y: i32, z: i32, id: u32) {
-        let Some((chunk, section, index)) = Self::locate(x, y, z) else {
-            return;
-        };
-        let chunk = self.chunks.entry(chunk).or_default();
-        let section = chunk.sections[section].get_or_insert_with(|| Box::new([0u32; 4096]));
-        section[index] = id;
-    }
-
-    pub fn get_id(&self, x: i32, y: i32, z: i32) -> u32 {
-        let Some((chunk, section, index)) = Self::locate(x, y, z) else {
-            return 0;
-        };
-        self.chunks
-            .get(&chunk)
-            .and_then(|c| c.sections[section].as_ref())
-            .map(|s| s[index])
-            .unwrap_or(0)
-    }
-
-    pub fn get(&self, x: i32, y: i32, z: i32) -> &BlockState {
-        self.palette.state(self.get_id(x, y, z))
-    }
-
-    /// Makes sure a chunk exists even if it stays all air, so it is written as generated.
-    pub fn touch_chunk(&mut self, cx: i32, cz: i32) {
-        self.chunks.entry((cx, cz)).or_default();
+        }
+        if let Some(c) = self.column_start(x, z) {
+            let (a, b) = ((y0 - MIN_Y) as usize, (y1 - MIN_Y) as usize);
+            self.blocks[c + a..c + b].fill(id);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::BlockState;
 
     #[test]
-    fn set_and_get() {
-        let mut w = World::new();
-        let stone = BlockState {
+    fn set_get_and_clip() {
+        let palette = Palette::new();
+        let stone = palette.intern(&BlockState {
             name: "minecraft:stone".into(),
             props: vec![],
-        };
-        w.set(-1, -64, 17, &stone);
-        w.set(5, 319, 5, &stone);
-        w.set(5, 320, 5, &stone); // out of range, ignored
-        assert_eq!(w.get(-1, -64, 17).name, "minecraft:stone");
-        assert_eq!(w.get(5, 319, 5).name, "minecraft:stone");
-        assert!(w.get(0, 0, 0).is_air());
-        assert!(w.chunks.contains_key(&(-1, 1)));
+        });
+        let mut a = Area::new(Rect::new(-16, 16, 0, 32), &palette);
+        a.set(-1, -64, 17, stone);
+        a.set(-16, 319, 31, stone);
+        a.set(0, 70, 20, stone); // outside: ignored
+        a.set(-5, 320, 20, stone); // above the world: ignored
+        assert_eq!(a.get(-1, -64, 17), stone);
+        assert_eq!(a.get(-16, 319, 31), stone);
+        assert_eq!(a.get(0, 70, 20), AIR);
+        a.fill_column(-8, 20, -100, 10, stone);
+        assert_eq!(a.top(-8, 20), Some(9));
+        assert_eq!(a.get(-8, -64, 20), stone);
+        assert!(a.set_if_air(-8, 10, 20, stone));
+        assert!(!a.set_if_air(-8, 10, 20, stone));
     }
 }
