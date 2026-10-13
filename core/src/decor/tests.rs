@@ -49,8 +49,11 @@ impl<'p> World<'p> {
             None => synth_column(11, x, z),
         };
         if trees {
-            for tree in self.decor.plan_trees(buffer.intersect(&self.map), &column) {
-                self.trees.build(&tree, &mut area);
+            // In the engine's order: overlapping crowns resolve the same way everywhere.
+            let mut planned = self.decor.plan_trees(buffer.intersect(&self.map), &column);
+            planned.sort_by_key(|t| (t.x, t.z, t.seed));
+            for tree in &planned {
+                self.trees.build(tree, &mut area);
             }
         }
         if decorate {
