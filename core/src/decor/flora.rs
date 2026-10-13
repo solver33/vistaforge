@@ -20,9 +20,12 @@ pub(crate) enum Form {
     Dense,
     /// One block, three model variants (`random`); a second one stacked on top makes it taller.
     Stack,
-    /// Like `Stack`, with `height` 1 for the lower block and 2 for the one stacked on it.
+    /// Like `Stack`. `height` 2 draws a two-block model from one block, a look the player picks
+    /// by clicking; stacked by hand, every block keeps `height` 1, so ours do too. A stacked
+    /// block with `height` 2 reads as a broken three-block plant.
     Height2,
-    /// A single block whose model is 1..=n blocks tall (`height`).
+    /// A single block whose model is 1..=n blocks tall (`height`), which the player sets by
+    /// clicking it. The cells the model reaches into stay empty.
     Tall(u8),
     /// Two blocks, `half` lower and upper.
     Double,
@@ -121,8 +124,8 @@ fn resolve(b: &Blocks, name: &str) -> Result<Plant> {
             .collect(),
         Form::Height2 => (0..3)
             .map(|r| {
-                let part = |h: u8| vec![("height", h.to_string()), ("random", r.to_string())];
-                (part(1), Some(part(2)))
+                let part = || vec![("height", "1".to_string()), ("random", r.to_string())];
+                (part(), Some(part()))
             })
             .collect(),
         Form::Tall(n) => (1..=n)
