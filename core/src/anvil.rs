@@ -106,12 +106,12 @@ fn block_states(blocks: &[BlockId; 4096], palette: &Palette, scratch: &mut Vec<u
     c
 }
 
-/// Biome palette and data for a section from the 16 biome cells of its chunk (index z * 4 + x),
-/// the same at every height. Linear biome palettes hold at most 8 entries (3 bits), so rarer
-/// extra biomes in one chunk fall back to the first one.
-fn biomes_tag(cells: &[&str; 16]) -> Compound {
+/// Biome palette and data for one section from its 64 biome cells, indexed (y * 4 + z) * 4 + x.
+/// Linear biome palettes hold at most 8 entries (3 bits), so rarer extra biomes in one section
+/// fall back to the first one.
+fn biomes_tag(cells: &[&'static str; 64]) -> Compound {
     let mut local: Vec<&str> = Vec::new();
-    let mut idx = [0u32; 16];
+    let mut idx = [0u32; 64];
     for (i, b) in cells.iter().enumerate() {
         idx[i] = match local.iter().position(|l| l == b) {
             Some(p) => p as u32,
@@ -124,29 +124,43 @@ fn biomes_tag(cells: &[&str; 16]) -> Compound {
     }
     let mut c = Compound::new().with("palette", Tag::strings(&local));
     if local.len() > 1 {
-        let all: Vec<u32> = (0..64).map(|i| idx[i % 16]).collect();
-        c.put("data", Tag::LongArray(pack(&all, ceil_log2(local.len()))));
+        c.put("data", Tag::LongArray(pack(&idx, ceil_log2(local.len()))));
     }
     c
 }
 
 /// The NBT of chunk (cx, cz), read from an area that contains the whole chunk.
-/// `biome(x, z)` names the Minecraft biome of a column; it is sampled once per 4×4 cell.
+/// `biome(x, y, z)` names the Minecraft biome of the 4×4×4 biome cell whose lowest block is at
+/// `y`, sampled at the centre column of the cell.
 pub fn chunk_tag(
     cx: i32,
     cz: i32,
     area: &Area,
     palette: &Palette,
-    biome: &dyn Fn(i32, i32) -> &'static str,
+    biome: &dyn Fn(i32, i32, i32) -> &'static str,
     scratch: &mut Vec<u32>,
 ) -> Compound {
     let (x0, z0) = (cx * 16, cz * 16);
-    let mut cells = [""; 16];
-    for (i, cell) in cells.iter_mut().enumerate() {
-        let (bx, bz) = ((i % 4) as i32 * 4 + 2, (i / 4) as i32 * 4 + 2);
-        *cell = biome(x0 + bx, z0 + bz);
-    }
-    let biomes = biomes_tag(&cells);
+    let mut last: Option<([&'static str; 64], Compound)> = None;
+    let mut section_biomes = |s: usize| {
+        let mut cells = [""; 64];
+        for (i, cell) in cells.iter_mut().enumerate() {
+            let (bx, by, bz) = (
+                (i % 4) as i32 * 4,
+                (i / 16) as i32 * 4,
+                (i / 4 % 4) as i32 * 4,
+            );
+            *cell = biome(x0 + bx + 2, MIN_Y + s as i32 * 16 + by, z0 + bz + 2);
+        }
+        match &last {
+            Some((prev, tag)) if *prev == cells => tag.clone(),
+            _ => {
+                let tag = biomes_tag(&cells);
+                last = Some((cells, tag.clone()));
+                tag
+            }
+        }
+    };
 
     let columns: Vec<&[BlockId]> = (0..256)
         .map(|i: i32| area.column(x0 + i % 16, z0 + i / 16))
@@ -164,7 +178,7 @@ pub fn chunk_tag(
             Compound::new()
                 .with("Y", (MIN_SECTION + s as i32) as i8)
                 .with("block_states", block_states(&blocks, palette, scratch))
-                .with("biomes", biomes.clone())
+                .with("biomes", section_biomes(s))
                 .into(),
         );
     }
@@ -299,11 +313,12 @@ mod tests {
         let mut area = Area::new(Rect::new(16, 0, 32, 16), &palette);
         // One block at local (15, y=-64+3, 15): last index of the bottom section's 4th layer.
         area.set(31, -61, 15, stone);
-        let biome = |x: i32, _z: i32| {
-            if x < 24 {
-                "minecraft:plains"
-            } else {
+        // River in the two lowest biome cells of the east half, plains everywhere else.
+        let biome = |x: i32, y: i32, _z: i32| {
+            if x >= 24 && y <= -60 {
                 "minecraft:river"
+            } else {
+                "minecraft:plains"
             }
         };
         let mut scratch = Vec::new();
@@ -336,9 +351,18 @@ mod tests {
             panic!()
         };
         let b = unpack(bdata, 1, 64);
-        // x cells 0-1 are plains (x < 24), 2-3 river, at every height.
+        // Cells are indexed (y * 4 + z) * 4 + x: river in x cells 2-3 of the two lowest layers.
         assert_eq!(&b[0..4], &[0, 0, 1, 1]);
-        assert_eq!(&b[60..64], &[0, 0, 1, 1]);
+        assert_eq!(&b[28..32], &[0, 0, 1, 1]);
+        assert_eq!(&b[32..36], &[0, 0, 0, 0]);
+        assert_eq!(&b[60..64], &[0, 0, 0, 0]);
+        let Tag::Compound(second) = &secs[1] else {
+            panic!()
+        };
+        let Some(Tag::Compound(biomes)) = second.get("biomes") else {
+            panic!()
+        };
+        assert!(biomes.get("data").is_none());
 
         let Tag::Compound(top) = &secs[SECTIONS - 1] else {
             panic!()

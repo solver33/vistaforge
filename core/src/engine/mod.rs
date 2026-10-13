@@ -388,13 +388,13 @@ impl<'c> Generator<'c> {
         scratch: &mut Vec<u32>,
     ) -> Result<(usize, usize)> {
         let piece = self.generate(rect);
-        let biome = |x: i32, z: i32| {
+        let biome = |x: i32, y: i32, z: i32| {
             let col = piece
                 .grid
                 .try_get(x, z)
                 .copied()
                 .unwrap_or_else(|| self.terrain.column(x, z));
-            self.surface.minecraft_biome(&col)
+            self.surface.minecraft_biome_at(&col, y)
         };
         let mut chunks = Vec::new();
         for cz in rect.z0 / 16..rect.z1 / 16 {
