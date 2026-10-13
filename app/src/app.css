@@ -142,6 +142,7 @@ button:disabled {
 }
 
 input[type='text'],
+input[type='search'],
 input[type='number'],
 select {
   height: 28px;
@@ -153,6 +154,7 @@ select {
 }
 
 input[type='text']:focus,
+input[type='search']:focus,
 input[type='number']:focus,
 select:focus {
   outline: none;

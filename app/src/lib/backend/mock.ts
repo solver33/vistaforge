@@ -75,6 +75,8 @@ const NORMAL: Sliders = {
   detail: 0.5,
   biome_blend: 0.5,
   biome_scale: 0.5,
+  sea: 0,
+  islands: 0.5,
 };
 
 function preset(
@@ -153,6 +155,7 @@ export class MockBackend implements Backend {
         sliders: { ...NORMAL },
         sea_level: 63,
         edits: [],
+        world_height: 'standard',
       },
     };
   }

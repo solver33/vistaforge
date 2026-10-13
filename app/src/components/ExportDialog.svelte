@@ -54,6 +54,11 @@
         {@const r = st.report}
         <h2>World ready</h2>
         <p>Start Minecraft with your Conquest Reforged pack, open <strong>Singleplayer</strong> and pick <strong>{app.settings.name}</strong>.</p>
+        {#if app.settings.world_height === 'tall'}
+          <p class="muted" data-testid="tall-warning">
+            This is a tall world, so Minecraft warns about experimental settings when you open it. That is expected: carry on into the world.
+          </p>
+        {/if}
         <dl>
           <dt>Chunks</dt>
           <dd>{formatInt(r.chunks)} in {r.regions} region {r.regions === 1 ? 'file' : 'files'}</dd>

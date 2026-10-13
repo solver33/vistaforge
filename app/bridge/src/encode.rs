@@ -10,17 +10,24 @@
 //! | 4                | magic `VFP1`                                                      |
 //! | 4                | `u32` length of the header, a multiple of 4                       |
 //! | header           | JSON `{size, res, step, trees, biomes: [id…], species: [id…]}`,   |
-//! |                  | padded with spaces                                                |
+//! |                  | plus `total_trees` when trees were left out; padded with spaces   |
 //! | 4·n              | `f32` ground heights, row-major (z, then x); n = res²             |
 //! | 4·n              | `f32` water surface Y, NaN where dry                              |
 //! | 4·n              | RGBA colours, alpha 255                                           |
 //! | n, padded to 4   | `u8` biome, an index into `header.biomes`                         |
 //! | 24·trees         | `f32` x, y, z, height, crown, species index into `header.species` |
+//!
+//! A forest preview of a 4096 map holds 350k trees and more. The UI can't show more than
+//! [`MAX_TREES`] of them usefully, so a bigger list is thinned evenly before it is packed.
 
 use serde::Serialize;
-use vistaforge_core::engine::Preview;
+use vistaforge_core::engine::{Preview, PreviewTree};
+use vistaforge_core::trees::Species;
 
 pub const MAGIC: &[u8; 4] = b"VFP1";
+
+/// Most trees sent to the UI. The 3D view draws at most this many.
+pub const MAX_TREES: usize = 120_000;
 
 #[derive(Serialize)]
 struct Header<'a> {
@@ -28,8 +35,19 @@ struct Header<'a> {
     res: u32,
     step: f32,
     trees: usize,
+    /// How many trees the preview had, when only some of them were packed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_trees: Option<usize>,
     biomes: Vec<&'a str>,
     species: Vec<String>,
+}
+
+/// At most `max` of `trees`, spread evenly through the list.
+fn thin(trees: &[PreviewTree], max: usize) -> Vec<&PreviewTree> {
+    if trees.len() <= max {
+        return trees.iter().collect();
+    }
+    (0..max).map(|k| &trees[k * trees.len() / max]).collect()
 }
 
 /// Index of `id` in `table`, adding it if new.
@@ -51,22 +69,32 @@ fn pad4(out: &mut Vec<u8>, fill: u8) {
 }
 
 pub fn preview(p: &Preview) -> Vec<u8> {
+    pack(p, MAX_TREES)
+}
+
+fn pack(p: &Preview, max_trees: usize) -> Vec<u8> {
     let mut biomes = Vec::new();
     let biome_index: Vec<u8> = p
         .biomes
         .iter()
         .map(|b| intern(&mut biomes, b.id()))
         .collect();
+    let trees = thin(&p.trees, max_trees);
     let mut species = Vec::new();
-    let tree_species: Vec<u8> = p
-        .trees
+    let mut seen: Vec<(Species, u8)> = Vec::new();
+    let tree_species: Vec<u8> = trees
         .iter()
-        .map(|t| {
-            let id = serde_json::to_value(t.species)
-                .ok()
-                .and_then(|v| v.as_str().map(String::from))
-                .unwrap_or_default();
-            intern(&mut species, id)
+        .map(|t| match seen.iter().find(|(s, _)| *s == t.species) {
+            Some(&(_, i)) => i,
+            None => {
+                let id = serde_json::to_value(t.species)
+                    .ok()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                let i = intern(&mut species, id);
+                seen.push((t.species, i));
+                i
+            }
         })
         .collect();
 
@@ -74,7 +102,8 @@ pub fn preview(p: &Preview) -> Vec<u8> {
         size: p.size,
         res: p.res,
         step: p.step,
-        trees: p.trees.len(),
+        trees: trees.len(),
+        total_trees: (trees.len() < p.trees.len()).then_some(p.trees.len()),
         biomes,
         species,
     })
@@ -82,7 +111,7 @@ pub fn preview(p: &Preview) -> Vec<u8> {
     pad4(&mut header, b' ');
 
     let n = p.heights.len();
-    let mut out = Vec::with_capacity(8 + header.len() + n * 13 + p.trees.len() * 24 + 4);
+    let mut out = Vec::with_capacity(8 + header.len() + n * 13 + trees.len() * 24 + 4);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&(header.len() as u32).to_le_bytes());
     out.extend_from_slice(&header);
@@ -97,7 +126,7 @@ pub fn preview(p: &Preview) -> Vec<u8> {
     }
     out.extend_from_slice(&biome_index);
     pad4(&mut out, 0);
-    for (t, &s) in p.trees.iter().zip(&tree_species) {
+    for (t, &s) in trees.iter().zip(&tree_species) {
         for v in [t.x, t.y, t.z, t.height, t.crown, s as f32] {
             out.extend_from_slice(&v.to_le_bytes());
         }
@@ -109,8 +138,6 @@ pub fn preview(p: &Preview) -> Vec<u8> {
 pub(crate) mod tests {
     use super::*;
     use vistaforge_core::biome::Biome;
-    use vistaforge_core::engine::PreviewTree;
-    use vistaforge_core::trees::Species;
 
     /// What `decode.ts` reads back; used to check the layout from the Rust side.
     pub struct Decoded {
@@ -197,6 +224,44 @@ pub(crate) mod tests {
         assert_eq!(d.trees, vec![[100.5, 66.0, 30.5, 14.0, 4.5, 0.0]]);
         assert_eq!(d.header["species"][0], "birch");
         assert_eq!(d.header["size"], 256);
+        assert!(d.header.get("total_trees").is_none());
+    }
+
+    #[test]
+    fn big_forests_are_thinned_evenly() {
+        let mut p = sample();
+        p.trees = (0..1000)
+            .map(|i| PreviewTree {
+                x: i as f32,
+                species: if i % 2 == 0 {
+                    Species::Oak
+                } else {
+                    Species::Spruce
+                },
+                ..p.trees[0]
+            })
+            .collect();
+        let d = decode(&pack(&p, 300));
+        assert_eq!(d.header["trees"], 300);
+        assert_eq!(d.header["total_trees"], 1000);
+        assert_eq!(d.trees.len(), 300);
+        // Kept trees cover the whole list, in order, with no gap wider than the even spacing.
+        assert_eq!(d.trees[0][0], 0.0);
+        assert!(d.trees[299][0] >= 996.0);
+        for w in d.trees.windows(2) {
+            let gap = w[1][0] - w[0][0];
+            assert!((3.0..=4.0).contains(&gap), "gap {gap}");
+        }
+        // Both species survive, and each tree keeps its own.
+        let names = d.header["species"].as_array().unwrap();
+        for t in &d.trees {
+            let want = if t[0] as i32 % 2 == 0 {
+                "oak"
+            } else {
+                "spruce"
+            };
+            assert_eq!(names[t[5] as usize], want);
+        }
     }
 
     /// `decode.test.ts` decodes the same file, so both sides agree on the layout.

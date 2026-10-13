@@ -29,6 +29,9 @@ export type EditKind = ShapeEdit['kind'];
 export type CircleEdit = Extract<ShapeEdit, { radius: number }>;
 export type LineEdit = Extract<ShapeEdit, { points: Point[] }>;
 
+/** How far up the world goes; the bottom is always Y -64. */
+export type WorldHeight = 'standard' | 'tall';
+
 export interface WorldSettings {
   name: string;
   size: number;
@@ -38,6 +41,7 @@ export interface WorldSettings {
   sliders: Sliders;
   sea_level: number;
   edits: ShapeEdit[];
+  world_height: WorldHeight;
   [later: string]: unknown;
 }
 
@@ -123,5 +127,7 @@ export interface PreviewData {
   /** 6 floats per tree: x, y, z, height, crown, species index into `species`. */
   trees: Float32Array;
   treeCount: number;
+  /** Trees on the whole map; more than `treeCount` when the bridge thinned a dense forest. */
+  totalTrees: number;
   species: SpeciesId[];
 }

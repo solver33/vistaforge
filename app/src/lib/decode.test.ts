@@ -25,6 +25,7 @@ describe('decodePreview', () => {
     expect([...p.colors]).toEqual([10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255]);
     expect([...p.biomes].map((b) => p.biomeIds[b])).toEqual(['lake', 'plains', 'plains', 'forest']);
     expect(p.treeCount).toBe(1);
+    expect(p.totalTrees).toBe(1);
     expect([...p.trees]).toEqual([100.5, 66, 30.5, 14, 4.5, 0]);
     expect(p.species).toEqual(['birch']);
   });
@@ -41,6 +42,13 @@ describe('decodePreview', () => {
     const p = decodePreview(fromHex(SAMPLE_HEX).buffer as ArrayBuffer);
     const again = decodePreview(encodePreview(p));
     expect(again).toEqual(p);
+  });
+
+  it('keeps the full tree count of a thinned forest', () => {
+    const p = decodePreview(fromHex(SAMPLE_HEX).buffer as ArrayBuffer);
+    const again = decodePreview(encodePreview({ ...p, totalTrees: 350_000 }));
+    expect(again.treeCount).toBe(1);
+    expect(again.totalTrees).toBe(350_000);
   });
 
   it('rejects other data', () => {

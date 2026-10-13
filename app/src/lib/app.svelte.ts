@@ -4,6 +4,7 @@
 import { pickBackend, type Backend } from './backend';
 import { isLine, rounded } from './edits';
 import { baseName, errorText } from './format';
+import { clampHeights, heightLimits } from './heights';
 import { History } from './history';
 import { worldNameProblem } from './names';
 import { randomSeed } from './seed';
@@ -17,6 +18,7 @@ import type {
   Preset,
   PreviewData,
   ShapeEdit,
+  WorldHeight,
   WorldSettings,
 } from './types';
 
@@ -83,6 +85,7 @@ const BLANK: WorldSettings = {
   sliders: {},
   sea_level: 63,
   edits: [],
+  world_height: 'standard',
 };
 
 function clone<T>(value: T): T {
@@ -153,6 +156,8 @@ class AppState {
     JSON.stringify({ c: this.catalogPath, s: this.savesDir, w: this.settings, u: this.ui }),
   );
   currentPreset = $derived(this.info?.presets.find((p) => p.id === this.settings.preset) ?? null);
+  /** Sea level and landform limits for the chosen world height. */
+  limits = $derived(heightLimits(this.settings.world_height));
   /** True when the biomes, sliders or sea level differ from the preset they started from. */
   presetModified = $derived.by(() => {
     const p = this.currentPreset;
@@ -340,6 +345,14 @@ class AppState {
     this.commit();
   }
 
+  /** Changes how tall the world is; going back to standard lowers anything above its limits. */
+  setWorldHeight(h: WorldHeight): void {
+    if (this.settings.world_height === h) return;
+    this.settings.world_height = h;
+    clampHeights(this.settings);
+    this.commit();
+  }
+
   // ---- Landforms ------------------------------------------------------------------------
 
   addEdit(edit: ShapeEdit): void {
@@ -435,10 +448,10 @@ class AppState {
     }
   }
 
-  /** Starts a fresh map from the current preset, keeping the name, size and folders. */
+  /** Starts a fresh map from the current preset, keeping the name, size, height and folders. */
   newMap(): void {
     if (!this.info) return;
-    const keep = { name: this.settings.name, size: this.settings.size };
+    const keep = { name: this.settings.name, size: this.settings.size, world_height: this.settings.world_height };
     const preset = this.currentPreset ?? this.info.presets[0];
     this.commit();
     this.settings = { ...this.fromPreset(preset, this.info.defaults), ...keep, seed: randomSeed() };

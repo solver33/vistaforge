@@ -38,15 +38,16 @@ export function shadeMap(p: PreviewData, trees: boolean): ImageData {
     }
   }
   if (trees) {
+    const leaves = p.species.map((s) => {
+      const hex = speciesStyle(s).leaves;
+      return [parseInt(hex.slice(1, 3), 16) || 52, parseInt(hex.slice(3, 5), 16) || 92, parseInt(hex.slice(5, 7), 16) || 36];
+    });
     for (let t = 0; t < p.treeCount; t++) {
       const o = 6 * t;
       const ci = p.trees[o] / p.step;
       const cj = p.trees[o + 2] / p.step;
       const rad = Math.max(0.5, p.trees[o + 4] / p.step);
-      const leaves = speciesStyle(p.species[p.trees[o + 5]] ?? '').leaves;
-      const lr = parseInt(leaves.slice(1, 3), 16) || 52;
-      const lg = parseInt(leaves.slice(3, 5), 16) || 92;
-      const lb = parseInt(leaves.slice(5, 7), 16) || 36;
+      const [lr, lg, lb] = leaves[p.trees[o + 5]] ?? [52, 92, 36];
       for (let j = Math.floor(cj - rad); j <= Math.ceil(cj + rad); j++) {
         for (let i = Math.floor(ci - rad); i <= Math.ceil(ci + rad); i++) {
           if (i < 0 || j < 0 || i >= n || j >= n) continue;

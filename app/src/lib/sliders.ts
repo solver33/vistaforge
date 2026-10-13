@@ -27,6 +27,12 @@ export const SLIDER_GROUPS: SliderGroup[] = [
     sliders: [
       { key: 'water', label: 'Lakes & wetland', help: 'Lakes, ponds and wetland.' },
       { key: 'rivers', label: 'Rivers', help: 'Number and size of rivers.' },
+      { key: 'sea', label: 'Sea', help: 'Share of the map under sea. 0 keeps the map landlocked.' },
+      {
+        key: 'islands',
+        label: 'Islands',
+        help: 'Shape of the sea: 0 a coast along one side, 0.5 one large island, 1 an archipelago.',
+      },
     ],
   },
   {
