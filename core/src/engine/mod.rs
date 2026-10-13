@@ -16,15 +16,16 @@ use serde::Serialize;
 use crate::anvil::{chunk_tag, compress_chunk, RegionWriter};
 use crate::biome::Biome;
 use crate::catalog::Catalog;
-use crate::column::{ColumnGrid, Rect};
+use crate::column::{ColumnGrid, ColumnInfo, Rect};
 use crate::decor::{self, Decor};
 use crate::level::{write_level_dat, LevelSettings};
+use crate::png;
 use crate::settings::WorldSettings;
 use crate::sink::{Blocks, Palette};
 use crate::surface::Surface;
 use crate::terrain::{Quality, Terrain};
 use crate::trees::{self, Species, Trees};
-use crate::world::Area;
+use crate::world::{Area, MIN_Y};
 
 /// Side of a generation unit in blocks (4×4 chunks).
 pub const UNIT: i32 = 64;
@@ -132,9 +133,7 @@ impl<'c> Generator<'c> {
         };
         // Only trees standing on the map: one just outside would show as half a crown.
         let map = Rect::square(self.size());
-        let planned: Vec<_> = self
-            .decor
-            .plan_trees(buffer.intersect(&map), &column);
+        let planned: Vec<_> = self.decor.plan_trees(buffer.intersect(&map), &column);
         for tree in &planned {
             self.trees.build(tree, &mut area);
         }
@@ -149,11 +148,33 @@ impl<'c> Generator<'c> {
     }
 
     /// A safe place to stand near the middle of the map: on the highest block of the column.
+    /// Where the player appears: the open, dry column nearest the middle of the map (not in
+    /// water or a tree crown), standing on its highest block.
     pub fn spawn(&self) -> (i32, i32, i32) {
         let c = self.size() / 2;
-        let piece = self.generate(Rect::new(c, c, c + 1, c + 1));
-        let top = piece.area.top(c, c).unwrap_or(self.settings.sea_level);
-        (c, top + 1, c)
+        let rect = Rect::new(c - 16, c - 16, c + 16, c + 16).intersect(&Rect::square(self.size()));
+        let piece = self.generate(rect);
+        let mut columns: Vec<(i32, i32)> = rect.columns().collect();
+        columns.sort_by_key(|&(x, z)| (x - c).pow(2) + (z - c).pow(2));
+        let open = |x: i32, z: i32| {
+            let Some(top) = piece.area.top(x, z) else {
+                return false;
+            };
+            let id = piece.area.column(x, z)[(top - MIN_Y) as usize];
+            !piece.grid.get(x, z).is_wet()
+                && self.palette.with(id, |s| {
+                    !["leaves", "log", "branch", "water"]
+                        .iter()
+                        .any(|w| s.name.contains(w))
+                })
+        };
+        let (x, z) = columns
+            .iter()
+            .copied()
+            .find(|&(x, z)| open(x, z))
+            .unwrap_or((c, c));
+        let top = piece.area.top(x, z).unwrap_or(self.settings.sea_level);
+        (x, top + 1, z)
     }
 
     pub fn preview(&self, res: u32) -> Preview {
@@ -161,22 +182,37 @@ impl<'c> Generator<'c> {
         let res = res.clamp(16, size);
         let step = size as f32 / res as f32;
         let n = (res * res) as usize;
+        // Rows are sampled in parallel; terrain columns are pure, so the order doesn't matter.
+        let mut samples: Vec<Option<(ColumnInfo, [u8; 3])>> = vec![None; n];
+        let workers = std::thread::available_parallelism()
+            .map(|w| w.get())
+            .unwrap_or(4);
+        let rows_per = (res as usize).div_ceil(workers);
+        std::thread::scope(|scope| {
+            for (k, part) in samples.chunks_mut(rows_per * res as usize).enumerate() {
+                scope.spawn(move || {
+                    for (idx, slot) in part.iter_mut().enumerate() {
+                        let flat = k * rows_per * res as usize + idx;
+                        let (i, j) = (flat % res as usize, flat / res as usize);
+                        let x = ((i as f32 + 0.5) * step) as i32;
+                        let z = ((j as f32 + 0.5) * step) as i32;
+                        let col = self.terrain.column(x, z);
+                        *slot = Some((col, self.surface.preview_color(x, z, &col)));
+                    }
+                });
+            }
+        });
         let (mut heights, mut water, mut colors, mut biomes) = (
             Vec::with_capacity(n),
             Vec::with_capacity(n),
             Vec::with_capacity(n),
             Vec::with_capacity(n),
         );
-        for j in 0..res {
-            for i in 0..res {
-                let x = ((i as f32 + 0.5) * step) as i32;
-                let z = ((j as f32 + 0.5) * step) as i32;
-                let col = self.terrain.column(x, z);
-                heights.push(col.height);
-                water.push(col.water_level.map(|w| w as f32 + 1.0));
-                colors.push(self.surface.preview_color(x, z, &col));
-                biomes.push(col.biome);
-            }
+        for (col, color) in samples.into_iter().flatten() {
+            heights.push(col.height);
+            water.push(col.water_level.map(|w| w as f32 + 1.0));
+            colors.push(color);
+            biomes.push(col.biome);
         }
         let column = |x: i32, z: i32| self.terrain.column(x, z);
         let trees = self
@@ -315,6 +351,16 @@ impl<'c> Generator<'c> {
                 creative: true,
             },
             &world_dir,
+        )?;
+        // The world list in the game shows icon.png; keep the settings to regenerate the map.
+        let icon = self.preview(64);
+        std::fs::write(
+            world_dir.join("icon.png"),
+            png::encode_rgb(icon.res, icon.res, &icon.colors)?,
+        )?;
+        std::fs::write(
+            world_dir.join("vistaforge.json"),
+            serde_json::to_string_pretty(&self.settings)?,
         )?;
         Ok(ExportReport {
             world_dir,
