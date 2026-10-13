@@ -5,16 +5,30 @@
 //! shared random sequence) and must stay within [`MAX_REACH`] blocks of the trunk sideways,
 //! because the engine rebuilds a tree in every piece of the map it overlaps and clips it there.
 //!
-//! The current implementation is the phase-0 oak; other species fall back to it until they are
-//! written.
+//! A build has two steps. `species` lays the tree out in a [`plan::Plan`] from the request
+//! alone: round trunks of logs, vertical slabs, vertical quarters and pillars; limbs of bark
+//! and large, normal and small branches; leaves in loose clumps. Then [`Trees::build`] fits
+//! the plan to the world: it stretches the trunk down to the ground of every column it covers,
+//! works out each branch's arms and post the way Conquest does, and writes the blocks. The
+//! world is only read in the columns being written, and other trees' blocks count as air
+//! there, so a tree's shape comes from its request and the ground alone. Where crowns
+//! overlap, the tree built later wins the shared cell: its leaves and wood replace leaves, but
+//! nothing replaces wood. The engine builds trees in a fixed order, so neighbouring pieces of
+//! the map agree.
+//!
+//! `tools/tree-render` draws side views of every species with [`render`].
 
-use std::collections::HashMap;
+mod kit;
+mod plan;
+pub mod render;
+mod species;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::noise::Rng;
 use crate::sink::{BlockId, BlockSink, Blocks, AIR};
+use kit::Kits;
+use plan::{Cell, Piece, Plan, DOWN, FOOT, MOSSY, SIDES, STUMP};
 
 /// Furthest a tree may place a block from its trunk column, along x or z.
 pub const MAX_REACH: i32 = 14;
@@ -33,6 +47,31 @@ pub enum Species {
     Bush,
 }
 
+impl Species {
+    pub const ALL: &'static [Species] = &[
+        Species::Oak,
+        Species::Birch,
+        Species::Spruce,
+        Species::Pine,
+        Species::Willow,
+        Species::Dead,
+        Species::Bush,
+    ];
+
+    /// English name for the app.
+    pub fn name(self) -> &'static str {
+        match self {
+            Species::Oak => "Oak",
+            Species::Birch => "Birch",
+            Species::Spruce => "Spruce",
+            Species::Pine => "Pine",
+            Species::Willow => "Willow",
+            Species::Dead => "Dead tree",
+            Species::Bush => "Bush",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TreeRequest {
     pub species: Species,
@@ -46,147 +85,59 @@ pub struct TreeRequest {
     pub seed: u64,
 }
 
-const DIRS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-
-/// Branch thickness, as Conquest names the pieces.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Thick {
-    Large,
-    Medium,
-    Small,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Piece {
-    Log,
-    Pillar,
-    Branch(Thick),
-    Leaves,
-}
-
-/// Block ids for one wood type, with every branch connection pre-resolved.
-struct Kit {
-    log: BlockId,
-    pillar: BlockId,
-    leaves: BlockId,
-    /// `[thickness][north | east << 1 | south << 2 | west << 3 | up << 4]`
-    branches: [[BlockId; 32]; 3],
-}
-
-impl Kit {
-    fn new(b: &Blocks, wood: &str) -> Result<Self> {
-        let flag = |v: bool| if v { "true" } else { "false" };
-        let mut branches = [[AIR; 32]; 3];
-        for (t, piece) in ["large_branch", "branch", "small_branch"]
-            .iter()
-            .enumerate()
-        {
-            for (bits, id) in branches[t].iter_mut().enumerate() {
-                *id = b.id(
-                    &format!("conquest:{wood}_log_{piece}"),
-                    &[
-                        ("north", flag(bits & 1 != 0)),
-                        ("east", flag(bits & 2 != 0)),
-                        ("south", flag(bits & 4 != 0)),
-                        ("west", flag(bits & 8 != 0)),
-                        ("up", flag(bits & 16 != 0)),
-                        ("waterlogged", "false"),
-                    ],
-                )?;
-            }
-        }
-        Ok(Self {
-            log: b.id(&format!("minecraft:{wood}_log"), &[("axis", "y")])?,
-            // layer=3 is the thickest pillar, 12 px wide.
-            pillar: b.id(
-                &format!("conquest:{wood}_log_pillar"),
-                &[("layer", "3"), ("down", "false"), ("waterlogged", "false")],
-            )?,
-            leaves: b.id(
-                &format!("minecraft:{wood}_leaves"),
-                &[("persistent", "true"), ("distance", "1")],
-            )?,
-            branches,
-        })
-    }
-}
-
 pub struct Trees {
-    oak: Kit,
-}
-
-/// A tree being assembled before it is written, so connections can be worked out first.
-struct Plan<'s> {
-    sink: &'s dyn BlockSink,
-    cells: HashMap<(i32, i32, i32), Piece>,
-}
-
-impl Plan<'_> {
-    fn free(&self, x: i32, y: i32, z: i32) -> bool {
-        !self.cells.contains_key(&(x, y, z)) && self.sink.get(x, y, z) == AIR
-    }
-
-    fn put(&mut self, x: i32, y: i32, z: i32, piece: Piece) {
-        self.cells.insert((x, y, z), piece);
-    }
-
-    fn put_if_free(&mut self, x: i32, y: i32, z: i32, piece: Piece) -> bool {
-        let free = self.free(x, y, z);
-        if free {
-            self.put(x, y, z, piece);
-        }
-        free
-    }
-
-    fn is_branch(&self, x: i32, y: i32, z: i32) -> bool {
-        matches!(self.cells.get(&(x, y, z)), Some(Piece::Branch(_)))
-    }
+    kits: Kits,
 }
 
 impl Trees {
     pub fn new(blocks: &Blocks) -> Result<Self> {
         Ok(Self {
-            oak: Kit::new(blocks, "oak")?,
+            kits: Kits::new(blocks)?,
         })
     }
 
     /// Rough height and crown radius in blocks, for previews.
     pub fn shape(&self, req: &TreeRequest) -> (f32, f32) {
-        let big = req.size >= 0.4;
-        if big {
-            (17.0, 7.0)
-        } else {
-            (11.0, 4.5)
-        }
+        species::shape(req.species, req.size)
     }
 
     pub fn build(&self, req: &TreeRequest, sink: &mut dyn BlockSink) {
-        let kit = &self.oak;
-        let mut plan = Plan {
-            sink: &*sink,
-            cells: HashMap::new(),
-        };
-        oak(&mut plan, req);
-
-        let mut writes = Vec::with_capacity(plan.cells.len());
-        for (&(x, y, z), &piece) in &plan.cells {
-            let id = match piece {
-                Piece::Log => kit.log,
-                Piece::Pillar => kit.pillar,
-                Piece::Leaves => kit.leaves,
-                Piece::Branch(t) => {
-                    // As Conquest's own update rule: arms towards neighbouring branches, a post
-                    // when the block below is solid or a branch. A pillar's top face isn't
-                    // sturdy, so the game itself would drop the post on the next block update;
-                    // keep it so the trunk reads as one piece.
-                    let up = plan.cells.contains_key(&(x, y - 1, z))
-                        || plan.sink.get(x, y - 1, z) != AIR;
-                    let bits = plan.is_branch(x, y, z - 1) as usize
-                        | (plan.is_branch(x + 1, y, z) as usize) << 1
-                        | (plan.is_branch(x, y, z + 1) as usize) << 2
-                        | (plan.is_branch(x - 1, y, z) as usize) << 3
-                        | (up as usize) << 4;
-                    kit.branches[t as usize][bits]
+        let mut plan = species::plan(req);
+        let origin = (req.x, req.y, req.z);
+        let replace = self.settle(&mut plan, &*sink, origin);
+        let water = self.kits.water;
+        let mut writes = Vec::new();
+        for (lx, ly, lz, cell) in plan.cells() {
+            let (x, y, z) = (lx + origin.0, ly + origin.1, lz + origin.2);
+            let target = sink.get(x, y, z);
+            let wet = target == water;
+            // Where crowns overlap, the later tree wins: leaves replace leaves, wood replaces
+            // leaves, and nothing replaces another tree's wood.
+            let free = target == AIR
+                || self.kits.is_leaves(target)
+                || match cell.piece {
+                    Piece::Leaves(_) => false,
+                    _ => wet || replace.contains(&(x, y, z)),
+                };
+            if !free {
+                continue;
+            }
+            let id = match cell.piece {
+                Piece::Leaves(l) => self.kits.leaves[l as usize],
+                piece => {
+                    let mossy = (cell.flags & MOSSY != 0) as u8;
+                    let kit = &self.kits.woods[(cell.wood + mossy) as usize];
+                    let arms = match piece {
+                        Piece::Branch(_) => self.branch_bits(&plan, &*sink, origin, (lx, ly, lz)),
+                        _ => 0,
+                    };
+                    kit.id(
+                        piece,
+                        cell.flags & STUMP != 0,
+                        cell.flags & DOWN != 0,
+                        wet,
+                        arms,
+                    )
                 }
             };
             writes.push((x, y, z, id));
@@ -195,124 +146,324 @@ impl Trees {
             sink.set(x, y, z, id);
         }
     }
+
+    /// Stretches the bottom of the trunk down to the ground in every column it covers, and
+    /// decides how it meets a Conquest layer block there: pillars and quarters stand on the
+    /// layer with `down=true` (reaching into it), anything else replaces the layer block so
+    /// no gap shows under it. Returns the layer cells the trunk may replace.
+    fn settle(
+        &self,
+        plan: &mut Plan,
+        sink: &dyn BlockSink,
+        (ox, oy, oz): (i32, i32, i32),
+    ) -> Vec<(i32, i32, i32)> {
+        let mut feet: Vec<(i32, i32, i32, Cell)> = Vec::new();
+        for (x, y, z, cell) in plan.cells() {
+            if cell.flags & FOOT != 0 && !feet.iter().any(|f| f.0 == x && f.2 == z) {
+                feet.push((x, y, z, cell)); // cells come bottom up: this is the lowest
+            }
+        }
+        let mut replace = Vec::new();
+        for (x, low, z, cell) in feet {
+            let (wx, wz) = (x + ox, z + oz);
+            let (from, to) = (low + oy + 3, low + oy - species::BELOW + 1);
+            let Some((g, layers)) = self.ground(sink, wx, from, wz, to) else {
+                continue;
+            };
+            let g = g - oy;
+            let partial = layers < 8;
+            // Below a root, only the post carries on down.
+            let foot = Cell {
+                flags: cell.flags & !FOOT,
+                links: 0,
+                ..cell
+            };
+            let bottom = if partial && !cell.piece.has_down() {
+                g
+            } else {
+                g + 1
+            };
+            for y in bottom..low {
+                plan.set(x, y, z, foot);
+            }
+            if partial {
+                let mut at = plan.get(x, bottom, z);
+                if at.piece.has_down() {
+                    at.flags |= DOWN;
+                } else {
+                    replace.push((wx, g + oy, wz));
+                    if let Piece::Slab(..) = at.piece {
+                        at.piece = Piece::Wood;
+                    }
+                }
+                plan.set(x, bottom, z, at);
+            }
+        }
+        replace
+    }
+
+    /// Whether a block is ground a tree can stand on or a branch rest on: anything but air,
+    /// water and the blocks of other trees, so no tree's shape depends on its neighbours.
+    fn is_ground(&self, id: BlockId) -> bool {
+        id != AIR && id != self.kits.water && !self.kits.is_tree(id)
+    }
+
+    /// The top of the ground in a column, scanning down from `from` to `to`: its Y and the
+    /// Conquest layer count of the block there (8 for a full block).
+    fn ground(
+        &self,
+        sink: &dyn BlockSink,
+        x: i32,
+        from: i32,
+        z: i32,
+        to: i32,
+    ) -> Option<(i32, u8)> {
+        (to..=from).rev().find_map(|y| {
+            let id = sink.get(x, y, z);
+            if !self.is_ground(id) {
+                return None;
+            }
+            let layers = sink.palette().with(id, |s| {
+                s.get("layers")
+                    .and_then(|l| l.parse::<u8>().ok())
+                    .unwrap_or(8)
+            });
+            Some((y, layers))
+        })
+    }
+
+    /// Arms and post of a branch piece: an arm along each side its limb runs through (to the
+    /// next branch, or into the trunk it leaves, which closes the gap there), and a post when
+    /// the tree itself or the ground is below, as Conquest's own rule has it (other trees don't
+    /// count). Conquest joins every pair of neighbouring branches when a block next to them
+    /// changes; the plan joins only each limb's own path, so limbs that pass side by side read
+    /// as separate limbs. A pillar's top face isn't sturdy, so the game would drop the post
+    /// above one on the next block update; it is kept so the trunk reads as one piece.
+    fn branch_bits(
+        &self,
+        plan: &Plan,
+        sink: &dyn BlockSink,
+        (ox, oy, oz): (i32, i32, i32),
+        (x, y, z): (i32, i32, i32),
+    ) -> usize {
+        let mut bits = 0;
+        let links = plan.get(x, y, z).links;
+        for (s, (dx, dz)) in SIDES.iter().enumerate() {
+            if links & (1 << s) != 0 && plan.piece(x + dx, y, z + dz).is_wood() {
+                bits |= 1 << s;
+            }
+        }
+        let below = sink.get(x + ox, y - 1 + oy, z + oz);
+        if plan.piece(x, y - 1, z) != Piece::Empty || self.is_ground(below) {
+            bits |= 16;
+        }
+        bits
+    }
 }
 
-/// An oak built the way Conquest builders do it: a tapering trunk (full logs, a 12 px pillar,
-/// then large-branch posts), limbs that run out and climb while thinning from large to small
-/// branches and fork at the ends, and loose leaf clumps on the twig ends, so the branch
-/// structure stays visible under and between them.
-fn oak(plan: &mut Plan, req: &TreeRequest) {
-    let mut rng = Rng::new(req.seed);
-    let (x, base, z) = (req.x, req.y, req.z);
-    let big = req.size >= 0.4;
-    let logs = if big { rng.range(3, 4) } else { 2 };
-    let pillars = rng.range(1, 2);
-    let posts = if big { rng.range(4, 5) } else { 3 };
-    for y in base..base + logs {
-        plan.put(x, y, z, Piece::Log);
-    }
-    for y in base + logs..base + logs + pillars {
-        plan.put(x, y, z, Piece::Pillar);
-    }
-    let crown = base + logs + pillars;
-    for y in crown..crown + posts {
-        plan.put(x, y, z, Piece::Branch(Thick::Large));
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::catalog::Catalog;
+    use crate::column::Rect;
+    use crate::sink::Palette;
+    use crate::world::Area;
+
+    fn catalog() -> Option<Catalog> {
+        let path = std::env::var("VISTAFORGE_CATALOG")
+            .unwrap_or_else(|_| "/mnt/project-files/vistaforge/catalog-cr-1.7.0.json".into());
+        Catalog::load(Path::new(&path)).ok()
     }
 
-    // One limb per side, at different heights so limbs never stack into walls.
-    let mut tips = Vec::new();
-    let sides = if big { 4 } else { 3 };
-    let start = rng.range(0, 3) as usize;
-    for i in 0..sides {
-        let y = crown + i as i32 * (posts - 1) / sides as i32;
-        limb(plan, &mut rng, &mut tips, (x, y, z), (start + i) % 4, big);
-    }
-
-    // The leader carries on up, splits into two twigs and gets the top clump.
-    let lead = rng.range(1, 2);
-    for k in 0..lead {
-        plan.put(x, crown + posts + k, z, Piece::Branch(Thick::Medium));
-    }
-    let ty = crown + posts + lead - 1;
-    tips.push((x, ty + 1, z));
-    for k in 0..2 {
-        let (dx, dz) = DIRS[(start + 1 + 2 * k) % 4];
-        if plan.put_if_free(x + dx, ty, z + dz, Piece::Branch(Thick::Small)) {
-            tips.push((x + dx, ty, z + dz));
-        }
-    }
-
-    // Loose, flattened clumps above the twig ends; the space under them stays open.
-    let rx: f64 = if big { 2.4 } else { 1.9 };
-    for (tx, ty, tz) in tips {
-        let r = rx as i32 + 1;
-        for dx in -r..=r {
-            for dz in -r..=r {
-                for dy in -1..=2 {
-                    let d = (dx * dx + dz * dz) as f64 / (rx * rx)
-                        + (dy as f64 - 0.4).powi(2) / (1.5 * 1.5);
-                    if d > 1.0 || (d > 0.45 && rng.unit() < 0.3) {
+    /// Every species builds onto uneven ground of grass blocks and Conquest layers without
+    /// floating: each trunk column reaches the ground.
+    #[test]
+    fn trees_stand_on_uneven_ground() {
+        let Some(catalog) = catalog() else {
+            eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+            return;
+        };
+        let palette = Palette::new();
+        let b = Blocks::new(&catalog, &palette);
+        let trees = Trees::new(&b).unwrap();
+        let grass = b
+            .id("minecraft:grass_block", &[("snowy", "false")])
+            .unwrap();
+        let layer: Vec<BlockId> = (1..=7)
+            .map(|l| {
+                b.id(
+                    "conquest:grass_block_layer",
+                    &[("layers", &l.to_string()), ("waterlogged", "false")],
+                )
+                .unwrap()
+            })
+            .collect();
+        for (n, &species) in Species::ALL.iter().enumerate() {
+            for size in [0.05, 0.3, 0.6, 1.0] {
+                let rect = Rect::new(-20, -20, 21, 21);
+                let mut area = Area::new(rect, &palette);
+                // A slope: ground rises one block every four columns, with layers between.
+                for (x, z) in rect.columns() {
+                    let h = 60.0 + x as f32 * 0.27 + z as f32 * 0.11;
+                    let top = h.floor() as i32;
+                    area.fill_column(x, z, 50, top, grass);
+                    let l = ((h - h.floor()) * 8.0) as usize;
+                    if l > 0 {
+                        area.set(x, top, z, layer[l - 1]);
+                    }
+                }
+                let col = crate::column::ColumnInfo::dry(60.0, crate::biome::Biome::Plains);
+                let (y, _) = col.ground();
+                let req = TreeRequest {
+                    species,
+                    x: 0,
+                    y,
+                    z: 0,
+                    size,
+                    seed: 1000 + n as u64,
+                };
+                trees.build(&req, &mut area);
+                let plan = species::plan(&req);
+                for (x, _, z, cell) in plan.cells() {
+                    if cell.flags & FOOT == 0 {
                         continue;
                     }
-                    plan.put_if_free(tx + dx, ty + dy, tz + dz, Piece::Leaves);
+                    let (x, z) = (x + req.x, z + req.z);
+                    // Find the lowest tree block above the grass blocks. A root that runs into
+                    // the slope leaves nothing in its column.
+                    let col = area.column(x, z);
+                    let Some(lowest) = (51..req.y + 4).find(|&y| {
+                        let id = col[(y - crate::world::MIN_Y) as usize];
+                        id != AIR && id != grass && !layer.contains(&id)
+                    }) else {
+                        assert!(
+                            x.abs() > 1 || z.abs() > 1,
+                            "{species:?} {size}: no trunk at ({x}, {z})"
+                        );
+                        continue;
+                    };
+                    let below = col[(lowest - 1 - crate::world::MIN_Y) as usize];
+                    assert!(
+                        below == grass || layer.contains(&below),
+                        "{species:?} {size}: trunk at ({x}, {lowest}, {z}) floats"
+                    );
+                }
+            }
+        }
+        crate::engine::validate_palette(&palette, &catalog).unwrap();
+    }
+
+    /// A tree comes out the same next to a neighbour, except where the neighbour's wood was
+    /// there first; and it wins every cell of the neighbour's leaves it wants.
+    #[test]
+    fn neighbours_do_not_change_a_tree() {
+        let Some(catalog) = catalog() else {
+            eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+            return;
+        };
+        let palette = Palette::new();
+        let b = Blocks::new(&catalog, &palette);
+        let trees = Trees::new(&b).unwrap();
+        let grass = b
+            .id("minecraft:grass_block", &[("snowy", "false")])
+            .unwrap();
+        let rect = Rect::new(-24, -24, 25, 25);
+        let ground = || {
+            let mut area = Area::new(rect, &palette);
+            for (x, z) in rect.columns() {
+                area.fill_column(x, z, 50, 64, grass);
+            }
+            area
+        };
+        let req = |species, x, seed| TreeRequest {
+            species,
+            x,
+            y: 64,
+            z: 0,
+            size: 0.8,
+            seed,
+        };
+        for (n, &species) in Species::ALL.iter().enumerate() {
+            let tree = req(species, 0, 7 + n as u64);
+            let neighbour = req(Species::Oak, 5, 99);
+            let (mut alone, mut first, mut both) = (ground(), ground(), ground());
+            trees.build(&tree, &mut alone);
+            trees.build(&neighbour, &mut first);
+            trees.build(&neighbour, &mut both);
+            trees.build(&tree, &mut both);
+            for (x, z) in rect.columns() {
+                for y in 64..110 {
+                    let mine = alone.get(x, y, z);
+                    let theirs = first.get(x, y, z);
+                    let got = both.get(x, y, z);
+                    if mine == AIR {
+                        assert_eq!(got, theirs, "{species:?} changed ({x}, {y}, {z})");
+                    } else if trees.kits.is_tree(theirs) && !trees.kits.is_leaves(theirs) {
+                        assert_eq!(got, theirs, "{species:?} replaced wood at ({x}, {y}, {z})");
+                    } else {
+                        assert_eq!(got, mine, "{species:?} differs at ({x}, {y}, {z})");
+                    }
                 }
             }
         }
     }
-}
 
-/// One limb: a thick stretch out of the trunk, a climb, a thinner stretch further out (sometimes
-/// with a sideways jog), then a fork into two small twigs whose ends get leaf clumps.
-fn limb(
-    plan: &mut Plan,
-    rng: &mut Rng,
-    tips: &mut Vec<(i32, i32, i32)>,
-    from: (i32, i32, i32),
-    dir: usize,
-    big: bool,
-) {
-    let (mut cx, mut cy, mut cz) = from;
-    let (dx, dz) = DIRS[dir];
-    let side = DIRS[(dir + if rng.unit() < 0.5 { 1 } else { 3 }) % 4];
-    let (inner, outer) = if big {
-        (rng.range(2, 3), rng.range(2, 3))
-    } else {
-        (rng.range(1, 2), rng.range(1, 2))
-    };
-
-    for _ in 0..inner {
-        cx += dx;
-        cz += dz;
-        plan.put_if_free(cx, cy, cz, Piece::Branch(Thick::Large));
-    }
-    for _ in 0..rng.range(1, 2) {
-        cy += 1;
-        plan.put_if_free(cx, cy, cz, Piece::Branch(Thick::Medium));
-    }
-    for k in 0..outer {
-        let (sx, sz) = if k == 1 && rng.unit() < 0.4 {
-            side
-        } else {
-            (dx, dz)
+    /// A forest with trunks four blocks apart, built as the engine builds two overlapping
+    /// pieces: each gets every tree standing within `MAX_REACH` of its rect, in the same order.
+    /// Trees near one piece's far edge are missing from the other, and the shared columns must
+    /// still come out the same.
+    #[test]
+    fn dense_forest_pieces_agree() {
+        let Some(catalog) = catalog() else {
+            eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+            return;
         };
-        cx += sx;
-        cz += sz;
-        plan.put_if_free(cx, cy, cz, Piece::Branch(Thick::Medium));
-    }
-
-    // Fork: one twig carries on outwards, the other goes to the side.
-    let (ox, oz) = (cx + dx, cz + dz);
-    if plan.put_if_free(ox, cy, oz, Piece::Branch(Thick::Small)) {
-        tips.push((ox, cy, oz));
-    }
-    let (fx, fz) = (cx - side.0, cz - side.1);
-    if plan.put_if_free(fx, cy, fz, Piece::Branch(Thick::Small)) {
-        if rng.unit() < 0.5
-            && plan.put_if_free(fx - side.0, cy, fz - side.1, Piece::Branch(Thick::Small))
-        {
-            tips.push((fx - side.0, cy, fz - side.1));
-        } else {
-            tips.push((fx, cy, fz));
+        let palette = Palette::new();
+        let b = Blocks::new(&catalog, &palette);
+        let trees = Trees::new(&b).unwrap();
+        let grass = b
+            .id("minecraft:grass_block", &[("snowy", "false")])
+            .unwrap();
+        let mut forest = Vec::new();
+        for gx in -12..24 {
+            for gz in -6..18 {
+                let h = crate::noise::hash2(5, gx, gz);
+                forest.push(TreeRequest {
+                    species: Species::ALL[(h % Species::ALL.len() as u64) as usize],
+                    x: gx as i32 * 4 + (h >> 8) as i32 % 3,
+                    y: 64,
+                    z: gz as i32 * 4 + (h >> 16) as i32 % 3,
+                    size: ((h >> 24) & 0xFF) as f32 / 255.0,
+                    seed: h,
+                });
+            }
         }
+        forest.sort_by_key(|t| (t.x, t.z, t.seed));
+        let piece = |rect: Rect| {
+            let buffer = Rect::new(
+                rect.x0 - MAX_REACH,
+                rect.z0 - MAX_REACH,
+                rect.x1 + MAX_REACH,
+                rect.z1 + MAX_REACH,
+            );
+            let mut area = Area::new(buffer, &palette);
+            for (x, z) in buffer.columns() {
+                area.fill_column(x, z, 50, 64, grass);
+            }
+            for t in forest.iter().filter(|t| buffer.contains(t.x, t.z)) {
+                trees.build(t, &mut area);
+            }
+            area
+        };
+        let a = piece(Rect::new(0, 0, 48, 48));
+        let b = piece(Rect::new(24, 8, 72, 56));
+        let shared = Rect::new(24, 8, 48, 48);
+        let differ = shared
+            .columns()
+            .filter(|&(x, z)| a.column(x, z) != b.column(x, z))
+            .count();
+        assert_eq!(differ, 0, "{differ} shared columns differ");
     }
 }
