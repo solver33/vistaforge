@@ -13,15 +13,20 @@ which the exporter mod below dumps from your own modpack.
 world: a block-state catalog loader, an NBT and Anvil region writer, a `level.dat` writer with an
 empty (void) superflat generator around the map, and the generators.
 
-For now it has one generator, a 256×256 test map used to check the world format in the game:
+It generates maps up to 4096×4096 by streaming 64×64-block pieces to region files on all CPU
+cores. How the modules fit together, and the rules each one follows, are in
+[docs/architecture.md](docs/architecture.md).
 
 ```
+cargo run --release -- presets
+cargo run --release -- preview  --catalog path/to/catalog.json --png map.png --size 1024
+cargo run --release -- generate --catalog path/to/catalog.json --out out --size 1024 --name "My Map"
 cargo run --release -- testworld --catalog path/to/catalog.json --out out
 ```
 
-This writes `out/Vistaforge Test`. Copy that folder into the game's `saves` folder. The world is
-creative, with a fixed midday and no mobs. Chunks are saved unlit, so the game computes lighting
-on first load.
+`generate` writes `out/<name>` (`testworld` writes a 256×256 `out/Vistaforge Test`). Copy that
+folder into the game's `saves` folder. The world is creative, with a fixed midday and no mobs.
+Chunks are saved unlit, so the game computes lighting on first load.
 
 `tools/check_world.py` reads a generated world back with an independent NBT parser (nbtlib),
 checks every block state against the catalog and draws a top-down preview (needs nbtlib and Pillow).

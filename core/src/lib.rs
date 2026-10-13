@@ -1,39 +1,22 @@
-//! Vistaforge core: the block catalog, an Anvil writer for Minecraft 1.20.1 and generators.
+//! Vistaforge core: generates Minecraft 1.20.1 maps built from Conquest Reforged blocks.
+//!
+//! Pipeline (see `docs/architecture.md`): [`terrain`] shapes the land and places biomes →
+//! [`surface`] picks the blocks of each column → [`decor`] plans trees, which [`trees`] builds,
+//! and adds plants and ground detail → [`engine`] streams it all to Anvil files.
 
 pub mod anvil;
+pub mod biome;
 pub mod catalog;
+pub mod column;
+pub mod decor;
+pub mod engine;
 pub mod level;
 pub mod nbt;
 pub mod noise;
-pub mod testworld;
+pub mod png;
+pub mod settings;
+pub mod sink;
+pub mod surface;
+pub mod terrain;
+pub mod trees;
 pub mod world;
-
-use std::collections::BTreeSet;
-
-use anyhow::{bail, Result};
-
-use crate::catalog::Catalog;
-use crate::world::World;
-
-/// Checks that every block state used in the world is complete and valid for the catalog.
-pub fn validate(world: &World, catalog: &Catalog) -> Result<usize> {
-    let mut used = BTreeSet::new();
-    for chunk in world.chunks.values() {
-        for section in chunk.sections.iter().flatten() {
-            used.extend(section.iter().copied());
-        }
-    }
-    for &id in &used {
-        let state = world.palette.state(id);
-        let props: Vec<(&str, &str)> = state
-            .props
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        let complete = catalog.state(&state.name, &props)?;
-        if &complete != state {
-            bail!("incomplete block state {state}, expected {complete}");
-        }
-    }
-    Ok(used.len())
-}
