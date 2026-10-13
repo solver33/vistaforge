@@ -135,6 +135,36 @@ test('place, edit, move and delete a hill on the map', async ({ page }) => {
   expect(problems).toEqual([]);
 });
 
+test('a tall world raises the height limits, and going back lowers what is too high', async ({ page }) => {
+  const problems = await open(page);
+  await expect(page.locator('[data-height="standard"]')).toHaveClass(/on/);
+  await expect(page.getByTestId('sea-level')).toHaveAttribute('max', '160');
+  await page.locator('[data-height="tall"]').click();
+  await expect(page.locator('[data-height="tall"]')).toHaveClass(/on/);
+  await expect(page.getByTestId('height-note')).toContainText('experimental settings');
+  await expect(page.getByTestId('sea-level')).toHaveAttribute('max', '300');
+
+  await page.locator('[data-tool="mountain"]').click();
+  const p = await mapPoint(page, 512, 512);
+  await page.mouse.click(p.x, p.y);
+  const height = page.getByTestId('inspector').locator('[data-field="height"]');
+  await height.fill('1500');
+  await height.press('Enter');
+  await expect(page.getByTestId('edits')).toContainText('1500 high');
+
+  await page.getByTestId('save-settings').click();
+  const saved = (await hooks(page)).files?.['C:\\Users\\you\\Documents\\Vistaforge World.json'];
+  expect(saved?.world_height).toBe('tall');
+
+  await page.locator('[data-height="standard"]').click();
+  await expect(page.getByTestId('edits')).toContainText('320 high');
+  await expect(page.getByTestId('height-note')).toHaveCount(0);
+  await page.getByTestId('undo').click();
+  await expect(page.locator('[data-height="tall"]')).toHaveClass(/on/);
+  await expect(page.getByTestId('edits')).toContainText('1500 high');
+  expect(problems).toEqual([]);
+});
+
 test('draw a river with clicks and a double-click', async ({ page }) => {
   await open(page);
   await page.getByRole('button', { name: 'Map', exact: true }).click();

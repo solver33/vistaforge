@@ -155,6 +155,7 @@ export class MockBackend implements Backend {
         sliders: { ...NORMAL },
         sea_level: 63,
         edits: [],
+        world_height: 'standard',
       },
     };
   }

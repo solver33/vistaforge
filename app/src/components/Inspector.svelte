@@ -8,16 +8,16 @@
   const edit = $derived(app.settings.edits[index] as ShapeEdit | undefined);
   const biomes = $derived(app.info?.biomes.filter((b) => !b.feature) ?? []);
 
-  /** The numeric fields each landform has, beyond its position. */
-  const FIELDS: Record<string, [key: string, label: string, min: number, max: number][]> = {
-    hill: [['radius', 'Radius', 4, 2048], ['height', 'Height', -120, 200]],
-    mountain: [['radius', 'Radius', 8, 2048], ['height', 'Height', 10, 320]],
-    plateau: [['radius', 'Radius', 4, 2048], ['level', 'Level (Y)', -60, 300]],
+  /** The numeric fields each landform has, beyond its position. Heights go higher in tall worlds. */
+  const FIELDS: Record<string, [key: string, label: string, min: number, max: number][]> = $derived({
+    hill: [['radius', 'Radius', 4, 2048], ['height', 'Height', -120, app.limits.hill]],
+    mountain: [['radius', 'Radius', 8, 2048], ['height', 'Height', 10, app.limits.mountain]],
+    plateau: [['radius', 'Radius', 4, 2048], ['level', 'Level (Y)', -60, app.limits.plateau]],
     lake: [['radius', 'Radius', 4, 2048], ['depth', 'Depth', 1, 60]],
     river: [['width', 'Width', 2, 200], ['depth', 'Depth', 1, 30]],
-    ridge: [['width', 'Width', 8, 1024], ['height', 'Height', 10, 320]],
+    ridge: [['width', 'Width', 8, 1024], ['height', 'Height', 10, app.limits.ridge]],
     biome_zone: [['radius', 'Radius', 8, 2048]],
-  };
+  });
 
   function set(key: string, value: number, min: number, max: number) {
     if (!Number.isFinite(value) || !edit) return;

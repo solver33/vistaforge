@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/app.svelte';
   import { formatInt } from '../lib/format';
+  import { WORLD_HEIGHTS } from '../lib/heights';
   import { parseSeed } from '../lib/seed';
   import Range from './Range.svelte';
   import Section from './Section.svelte';
@@ -14,6 +15,7 @@
   );
   const chunks = $derived((app.settings.size / 16) ** 2);
   const regions = $derived(Math.ceil(app.settings.size / 512) ** 2);
+  const height = $derived(WORLD_HEIGHTS.find((h) => h.id === app.settings.world_height) ?? WORLD_HEIGHTS[0]);
 
   let seedText = $state('');
   $effect(() => {
@@ -77,13 +79,27 @@
   </div>
   <div class="faint note">{formatInt(chunks)} chunks · {regions} region {regions === 1 ? 'file' : 'files'}</div>
 
+  <div class="field">
+    <span class="label">World height</span>
+    <span class="segmented heights" data-testid="world-height">
+      {#each WORLD_HEIGHTS as h (h.id)}
+        <button class:on={height.id === h.id} data-height={h.id} title={h.help} onclick={() => app.setWorldHeight(h.id)}>
+          {h.label} <span class="top">to Y {h.top}</span>
+        </button>
+      {/each}
+    </span>
+  </div>
+  {#if height.id !== 'standard'}
+    <div class="faint note" data-testid="height-note">{height.help}</div>
+  {/if}
+
   <Range
     label="Sea level"
     help="Y of the sea surface, and the default level for lakes."
     value={app.settings.sea_level}
     normal={app.currentPreset?.sea_level ?? null}
     min={0}
-    max={160}
+    max={app.limits.seaLevel}
     step={1}
     format={(v) => `Y ${v}`}
     testid="sea-level"
@@ -130,5 +146,18 @@
   .note {
     margin: -4px 0 8px;
     font-size: 12px;
+  }
+
+  .heights {
+    display: flex;
+  }
+
+  .heights button {
+    flex: 1;
+  }
+
+  .top {
+    font-size: 11px;
+    opacity: 0.75;
   }
 </style>
