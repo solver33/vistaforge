@@ -123,10 +123,8 @@ pub(crate) mod tests {
     }
 
     fn f32s(bytes: &[u8]) -> Vec<f32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
+        let (words, _) = bytes.as_chunks::<4>();
+        words.iter().map(|w| f32::from_le_bytes(*w)).collect()
     }
 
     pub fn decode(bytes: &[u8]) -> Decoded {
@@ -148,9 +146,9 @@ pub(crate) mod tests {
             .collect();
         at += n.div_ceil(4) * 4;
         let trees = f32s(&bytes[at..at + 24 * trees])
-            .chunks_exact(6)
-            .map(|c| c.try_into().unwrap())
-            .collect();
+            .as_chunks::<6>()
+            .0
+            .to_vec();
         assert_eq!(
             bytes.len(),
             at + 24 * header["trees"].as_u64().unwrap() as usize
