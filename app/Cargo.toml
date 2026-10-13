@@ -1,0 +1,9 @@
+# The app has its own cargo workspace: the Tauri crate needs webkit on Linux, which the cloud
+# container lacks, so it stays out of the root workspace and is built on Windows CI.
+[workspace]
+members = ["bridge", "src-tauri"]
+default-members = ["bridge"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3

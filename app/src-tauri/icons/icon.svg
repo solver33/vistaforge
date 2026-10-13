@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b3a46"/>
+      <stop offset="1" stop-color="#16201f"/>
+    </linearGradient>
+    <linearGradient id="peak" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0cf7a"/>
+      <stop offset="1" stop-color="#b8862f"/>
+    </linearGradient>
+    <linearGradient id="hill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6f9c48"/>
+      <stop offset="1" stop-color="#3d5f2b"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="64" y="64" width="896" height="896" rx="200"/></clipPath>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#sky)"/>
+  <g clip-path="url(#tile)">
+    <path d="M64 700 L330 330 L430 450 L560 250 L800 600 L960 520 L960 960 L64 960 Z" fill="url(#peak)"/>
+    <path d="M560 250 L620 340 L585 330 L560 372 L535 322 L500 340 Z" fill="#fbf1d6"/>
+    <path d="M330 330 L372 390 L345 384 L325 410 L305 380 L288 388 Z" fill="#fbf1d6"/>
+    <path d="M64 760 Q260 640 470 730 T960 700 L960 960 L64 960 Z" fill="url(#hill)"/>
+    <path d="M64 860 Q320 790 560 850 T960 830 L960 960 L64 960 Z" fill="#2f4a24"/>
+    <rect x="684" y="640" width="26" height="150" rx="8" fill="#4b3826"/>
+    <path d="M697 600 l-64 40 22 6 -10 22 26 -4 -6 26 32 -16 32 16 -6 -26 26 4 -10 -22 22 -6 Z" fill="#26421f"/>
+    <circle cx="697" cy="610" r="70" fill="#2f5226"/>
+    <circle cx="650" cy="650" r="46" fill="#36602b"/>
+    <circle cx="742" cy="648" r="50" fill="#2b4b23"/>
+  </g>
+</svg>

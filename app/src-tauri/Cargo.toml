@@ -1,0 +1,16 @@
+[package]
+name = "vistaforge-app"
+version = "0.1.0"
+edition = "2021"
+description = "Vistaforge desktop app (Tauri shell around vistaforge-bridge)"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+vistaforge-bridge = { path = "../bridge" }
+vistaforge-core = { path = "../../core" }
