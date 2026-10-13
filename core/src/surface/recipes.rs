@@ -98,29 +98,34 @@ const LAKE_BEDS: [Mix; 3] = [
     ),
 ];
 
+/// River beds: dark wet sand, silt and gravel, with stones only here and there, so a river
+/// doesn't read as a bright band.
 const RIVER_BEDS: [Mix; 3] = [
     mixa(
         &[
-            ("pebbles", 3),
-            ("wet_river_sand", 2),
-            ("wet_sand_gravel", 2),
+            ("wet_river_sand", 3),
+            ("mossy_silt", 2),
+            ("mud", 1),
+            ("wet_sand_gravel", 1),
         ],
         5.0,
-        &[("mossy_stones", 1), ("small_stones", 1)],
+        &[("mossy_stones", 2), ("pebbles", 1)],
         3.0,
-        0.15,
+        0.1,
     ),
     mixa(
-        &[("gravel", 3), ("pebbles", 2), ("sand_gravel", 1)],
+        &[
+            ("wet_river_sand", 2),
+            ("dark_gravel", 2),
+            ("dark_silt", 1),
+            ("wet_sand_gravel", 1),
+        ],
         6.0,
-        &[("small_stones", 1), ("light_gravel", 1)],
+        &[("mossy_stones", 1), ("pebbles", 1)],
         3.0,
-        0.15,
+        0.1,
     ),
-    mix(
-        &[("gravel", 3), ("gray_gravel", 1), ("small_stones", 1)],
-        7.0,
-    ),
+    mix(&[("dark_gravel", 2), ("dark_silt", 1), ("clay", 1)], 7.0),
 ];
 
 const SWAMP_BEDS: [Mix; 3] = [
@@ -773,34 +778,48 @@ const BEACH: Recipe = Recipe {
     ..PLAINS
 };
 
+/// River banks: damp, mossy ground that runs into the land around, with the odd stone.
 const RIVER: Recipe = Recipe {
     open: mixa(
-        &[("grass", 3), ("overgrown_silt", 2), ("mossy_silt", 1)],
+        &[("grass", 3), ("overgrown_silt", 2), ("mossy_silt", 2)],
         7.0,
-        &[("overgrown_stones", 1)],
+        &[("mossy_stones", 1), ("mud", 1)],
         3.0,
-        0.1,
+        0.08,
     ),
-    wet: mix(&[("mossy_silt", 2), ("wet_river_sand", 2), ("mud", 1)], 5.0),
-    stony: mix(
-        &[("pebbles", 2), ("mossy_stones", 2), ("overgrown_stones", 2)],
-        4.0,
-    ),
-    scree: mix(&[("pebbles", 2), ("@debris", 2)], 4.0),
-    shore: mixa(
+    wet: mix(
         &[
-            ("wet_river_sand", 3),
-            ("pebbles", 2),
-            ("wet_sand_gravel", 2),
+            ("mossy_silt", 3),
+            ("mud", 2),
+            ("wet_river_sand", 1),
+            ("green_sphagnum", 1),
+        ],
+        5.0,
+    ),
+    stony: mix(
+        &[
+            ("overgrown_stones", 2),
+            ("mossy_stones", 2),
+            ("mossy_silt", 1),
         ],
         4.0,
-        &[("mossy_stones", 1)],
+    ),
+    scree: mix(&[("mossy_stones", 2), ("@debris", 2), ("pebbles", 1)], 4.0),
+    shore: mixa(
+        &[
+            ("mossy_silt", 3),
+            ("mud", 2),
+            ("wet_river_sand", 2),
+            ("overgrown_silt", 1),
+        ],
+        5.0,
+        &[("mossy_stones", 1), ("pebbles", 1)],
         3.0,
-        0.12,
+        0.08,
     ),
     beds: RIVER_BEDS,
     topsoil: "dirt",
-    subsoil: "sand_gravel",
+    subsoil: "brown_earth",
     soil_depth: 3.0,
     ..PLAINS
 };
