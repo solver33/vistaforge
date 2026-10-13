@@ -309,7 +309,7 @@ fn river_banks_blend_into_the_land() {
         river.water = WaterKind::River;
         river.flow = 1.0;
         for (x, z) in Rect::new(0, 0, 40, 40).columns() {
-            let k = kind(&s.top(x, z, &river, None));
+            let k = kind(&s.top(x, z, &river, None, None));
             assert!(matches!(k, Kind::Mud | Kind::Moss), "{land:?} bed {k:?}");
         }
     }
@@ -327,7 +327,7 @@ fn river_banks_blend_into_the_land() {
         bank.moisture = 0.7;
         for (x, z) in Rect::new(0, 0, 40, 40).columns() {
             for near in [Some(near), Some(Near { dist: 3.5, ..near }), None] {
-                let t = s.top(x, z, &bank, near);
+                let t = s.top(x, z, &bank, near, None);
                 assert!(
                     !matches!(t.zone, Zone::Scree | Zone::Stony),
                     "{land:?} {x} {z}"

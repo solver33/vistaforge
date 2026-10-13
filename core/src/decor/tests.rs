@@ -5,7 +5,7 @@ use super::*;
 use crate::catalog::Catalog;
 use crate::column::ColumnGrid;
 use crate::sink::Palette;
-use crate::surface::tests::{catalog, region_biome, synth_column, synth_grid, REGION};
+use crate::surface::tests::{catalog, region_biome, synth_column, REGION};
 use crate::trees::Trees;
 use crate::world::Area;
 
@@ -38,15 +38,26 @@ impl<'p> World<'p> {
 
     /// A piece as the engine makes it: `rect` and its margin, with or without trees and decor.
     fn piece(&self, rect: Rect, trees: bool, decorate: bool) -> (Area<'p>, ColumnGrid) {
+        self.piece_of(rect, |x, z| synth_column(11, x, z), trees, decorate)
+    }
+
+    /// A piece of any terrain.
+    fn piece_of(
+        &self,
+        rect: Rect,
+        terrain: impl Fn(i32, i32) -> ColumnInfo,
+        trees: bool,
+        decorate: bool,
+    ) -> (Area<'p>, ColumnGrid) {
         let buffer = rect.expand(MARGIN);
-        let grid = synth_grid(11, buffer);
+        let grid = ColumnGrid::build(buffer, &terrain);
         let mut area = Area::new(buffer, self.palette);
         for (x, z) in buffer.columns() {
             self.surface.fill(x, z, &grid, &mut area);
         }
         let column = |x: i32, z: i32| match grid.try_get(x, z) {
             Some(c) => *c,
-            None => synth_column(11, x, z),
+            None => terrain(x, z),
         };
         if trees {
             // In the engine's order: overlapping crowns resolve the same way everywhere.
@@ -281,4 +292,159 @@ fn tall_plants_are_built_as_by_hand() {
     eprintln!("{tall} tall reeds, {taller} of them taller than a block; {stacked} stacked grasses");
     assert!(tall > 50 && taller > tall / 3, "{tall} {taller}");
     assert!(stacked > 50, "{stacked}");
+}
+
+/// A forest river that drops eight blocks, from water at Y 72 to a pool at Y 64, over a ledge
+/// at x = 24. The curtain is two columns thick, and the pool under it is deeper.
+fn waterfall(x: i32, z: i32) -> ColumnInfo {
+    let up = x < 24;
+    if (12..=17).contains(&z) {
+        let (level, bed) = match x {
+            _ if up => (72, 69.0),
+            24..=25 => (64, 60.0),
+            26..=29 => (64, 59.5),
+            _ => (64, 61.0),
+        };
+        ColumnInfo {
+            height: bed,
+            water_level: Some(level),
+            water: WaterKind::River,
+            biome2: Biome::Forest,
+            slope: 0.2,
+            moisture: 0.8,
+            flow: 1.0,
+            fall: (24..=25).contains(&x).then_some(72),
+            ..ColumnInfo::dry(bed, Biome::River)
+        }
+    } else {
+        let d = if z < 12 { 12 - z } else { z - 17 } as f32;
+        let h = if up { 73.0 } else { 65.5 } + 0.4 * d.min(6.0);
+        ColumnInfo {
+            biome2: Biome::River,
+            blend: if d < 3.0 { 0.4 } else { 0.0 },
+            slope: 0.4,
+            moisture: 0.6,
+            flow: (0.9 * (1.0 - d / 6.0)).max(0.0),
+            ..ColumnInfo::dry(h, Biome::Forest)
+        }
+    }
+}
+
+/// A waterfall's curtain is falling water streaked with white water, its colour matches the
+/// pools, the pool under it is scoured to dark stones, the spray keeps the banks wet and mossy,
+/// steam and mist hang over its foot, and nothing grows in the churning water.
+#[test]
+fn waterfalls_have_white_water_and_mist() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let w = World::new(&catalog, &palette);
+    let rect = Rect::new(0, 0, 48, 32);
+    let (area, grid) = w.piece_of(rect, waterfall, true, true);
+    let name = |x: i32, y: i32, z: i32| palette.state(area.get(x, y, z)).name.clone();
+
+    // The curtain.
+    let (mut falling, mut foam) = (0, 0);
+    for x in 24..=25 {
+        for z in 12..=17 {
+            for y in 65..=72 {
+                let state = palette.state(area.get(x, y, z));
+                match state.name.as_str() {
+                    "minecraft:water" => {
+                        assert_eq!(state.get("level"), Some("8"), "{x} {y} {z}");
+                        falling += 1;
+                    }
+                    "conquest:waterfall_pane" => {
+                        assert_eq!(state.get("waterlogged"), Some("true"));
+                        // Standing across the river, which flows along x.
+                        assert_eq!(state.get("north"), Some("true"));
+                        foam += 1;
+                    }
+                    other => panic!("{other} in the curtain at {x} {y} {z}"),
+                }
+            }
+            assert_eq!(name(x, 73, z), "minecraft:air");
+            let col = grid.get(x, z);
+            assert!(w.surface.minecraft_biome_at(col, 68).ends_with("ocean"));
+        }
+    }
+    eprintln!("curtain: {falling} falling water, {foam} white water");
+    assert!(foam > 20 && falling > 20, "{foam} {falling}");
+
+    // The ground around it.
+    let kit = &w.surface.kit;
+    let stones: Vec<_> = ["mossy_stones", "dark_gravel", "mossy_gravel", "pebbles"]
+        .iter()
+        .map(|k| kit.get(k))
+        .collect();
+    for z in 13..=16 {
+        for x in 24..=27 {
+            let top = w.surface.top_at(x, z, &grid).unwrap();
+            assert!(stones.contains(&top.mat), "pool bed at {x} {z}");
+        }
+    }
+    for x in 23..=27 {
+        for z in [10, 11, 18, 19] {
+            let top = w.surface.top_at(x, z, &grid).unwrap();
+            assert!(
+                matches!(top.zone, Zone::Wet | Zone::Rock | Zone::Wood),
+                "{:?} bank at {x} {z}",
+                top.zone
+            );
+        }
+    }
+
+    // Mist, and no plants in the pool.
+    let (mut steam, mut mist) = (0, 0);
+    for (x, z) in rect.columns() {
+        for y in 60..80 {
+            let n = name(x, y, z);
+            if n == "conquest:steam" || n == "conquest:white_cloud" {
+                let near = (24..=25)
+                    .flat_map(|cx| (12..=17).map(move |cz| (cx, cz)))
+                    .map(|(cx, cz)| (cx - x).pow(2) + (cz - z).pow(2))
+                    .min()
+                    .unwrap();
+                assert!(near <= falls::MIST_REACH.pow(2), "{n} at {x} {y} {z}");
+                assert!((65..=69).contains(&y), "{n} at {x} {y} {z}");
+                if n == "conquest:steam" {
+                    steam += 1;
+                } else {
+                    mist += 1;
+                }
+            }
+        }
+        if (22..=27).contains(&x) && (12..=17).contains(&z) {
+            let col = grid.get(x, z);
+            for y in col.ground().0..=72 {
+                let n = name(x, y, z);
+                assert!(
+                    !n.contains("reed") && !n.contains("rush") && !n.contains("lily"),
+                    "{n} at {x} {y} {z}"
+                );
+            }
+        }
+    }
+    eprintln!("{steam} steam, {mist} mist");
+    assert!(steam + mist > 25 && steam > 5 && mist > 5, "{steam} {mist}");
+}
+
+/// Overlapping pieces agree on every block around a waterfall.
+#[test]
+fn pieces_agree_over_a_waterfall() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let w = World::new(&catalog, &palette);
+    let a = Rect::new(0, 0, 40, 30);
+    let b = Rect::new(13, 7, 53, 37);
+    let (pa, _) = w.piece_of(a, waterfall, true, true);
+    let (pb, _) = w.piece_of(b, waterfall, true, true);
+    for (x, z) in a.intersect(&b).columns() {
+        assert_eq!(pa.column(x, z), pb.column(x, z), "differs at {x} {z}");
+    }
 }

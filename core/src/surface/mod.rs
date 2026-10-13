@@ -8,6 +8,10 @@
 //! patches (see `recipes`). Below the top come soil and then rock in wavy strata, so cliffs and
 //! banks show layered rock (see `geology`).
 //!
+//! Waterfalls: falling water fills the curtain above a column's water up to its `fall`, the
+//! plunge pool below is scoured to dark mossy stones, and the spray keeps the ground beside it
+//! wet and mossy.
+//!
 //! [`Surface::fill`] depends only on the seed, the column position and the columns within
 //! [`NEAR`] blocks of it, so overlapping pieces of the map agree.
 
@@ -100,6 +104,42 @@ struct Near {
     river: bool,
 }
 
+/// The nearest waterfall curtain to a column.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Fall {
+    /// Distance to it, in blocks.
+    pub dist: f32,
+    /// Height of the drop, in blocks.
+    pub drop: i32,
+    /// Water level of the plunge pool at its foot.
+    pub pool: i32,
+}
+
+/// The nearest waterfall curtain within `radius` blocks of a column, if any.
+pub(crate) fn nearest_fall(x: i32, z: i32, grid: &ColumnGrid, radius: i32) -> Option<Fall> {
+    let mut best: Option<(i32, Fall)> = None;
+    for dx in -radius..=radius {
+        for dz in -radius..=radius {
+            let d = dx * dx + dz * dz;
+            if d > radius * radius || best.is_some_and(|(bd, _)| d >= bd) {
+                continue;
+            }
+            let Some(c) = grid.try_get(x + dx, z + dz) else {
+                continue;
+            };
+            if let (Some(w), Some(f)) = (c.water_level, c.fall) {
+                let fall = Fall {
+                    dist: (d as f32).sqrt(),
+                    drop: f - w,
+                    pool: w,
+                };
+                best = Some((d, fall));
+            }
+        }
+    }
+    best.map(|(_, f)| f)
+}
+
 /// A dry column within reach of a river and less than four blocks above it.
 fn low_bank(col: &ColumnInfo, near: Option<Near>) -> bool {
     near.is_some_and(|n| n.river && col.height < n.level as f32 + 4.0)
@@ -112,10 +152,13 @@ pub struct Surface {
     recipes: Vec<RRecipe>,
     river_beds: [RMix; 3],
     swamp_beds: [RMix; 3],
+    fall_bed: RMix,
+    fall_bank: RMix,
     snow: Mat,
     bedrock: BlockId,
     deep: BlockId,
     water: BlockId,
+    falling: BlockId,
     /// Scales the share of accent patches (the "detail" slider).
     accent: f32,
 }
@@ -166,12 +209,15 @@ impl Surface {
             seed: settings.seed,
             river_beds: beds(recipes::river_beds()),
             swamp_beds: beds(recipes::swamp_beds()),
+            fall_bed: rmix(&recipes::FALL_BED),
+            fall_bank: rmix(&recipes::FALL_BANK),
             recipes,
             geology,
             snow: kit.get("snow"),
             bedrock: b.default_id("minecraft:bedrock")?,
             deep: b.default_id("minecraft:stone")?,
             water: b.id("minecraft:water", &[("level", "0")])?,
+            falling: b.id("minecraft:water", &[("level", "8")])?,
             accent: (settings.sliders.detail.clamp(0.0, 1.0) * 2.0).max(0.0),
             kit,
         })
@@ -272,14 +318,25 @@ impl Surface {
         }
     }
 
-    fn top(&self, x: i32, z: i32, col: &ColumnInfo, near: Option<Near>) -> Top {
+    fn top(&self, x: i32, z: i32, col: &ColumnInfo, near: Option<Near>, fall: Option<Fall>) -> Top {
         let biome = self.ground_biome(x, z, col);
         let zone = self.zone(x, z, col, biome, near);
+        // A waterfall's spray reaches further from a higher drop, and up to a little above its
+        // lip: the pool under it is scoured to stone and the ground beside it stays wet.
+        let spray = fall.is_some_and(|f| {
+            let reach = 1.5 + f.drop.min(14) as f32 / 4.0 + dither(self.seed, 22, x, z, 1.0);
+            f.dist <= reach && col.height < (f.pool + f.drop + 3) as f32
+        });
+        let zone = match zone {
+            Zone::Open | Zone::Wet | Zone::Stony | Zone::Scree | Zone::Shore if spray => Zone::Wet,
+            z => z,
+        };
         let strata = self.geology.strata(x, z);
         let r = self.recipe(biome);
         let mat = match zone {
             Zone::Open => self.choose(&r.open, 1, x, z, strata.suite),
             Zone::Wood => self.choose(&r.wood, 2, x, z, strata.suite),
+            Zone::Wet if spray => self.choose(&self.fall_bank, 23, x, z, strata.suite),
             Zone::Wet => self.choose(&r.wet, 3, x, z, strata.suite),
             Zone::Stony => self.choose(&r.stony, 4, x, z, strata.suite),
             Zone::Scree => self.choose(&r.scree, 5, x, z, strata.suite),
@@ -292,6 +349,7 @@ impl Surface {
                 };
                 self.choose(shore, 6, x, z, strata.suite)
             }
+            Zone::Bed(_) if spray => self.choose(&self.fall_bed, 24, x, z, strata.suite),
             Zone::Bed(d) => {
                 let beds = match col.water {
                     WaterKind::River if biome != Biome::River && !wetland(biome) => {
@@ -305,7 +363,7 @@ impl Surface {
             Zone::Rock => {
                 let (y, _) = col.ground();
                 let rock = self.geology.rock(&strata, y - 1);
-                let damp = col.moisture + dither(self.seed, 20, x, z, 0.3) > 0.5;
+                let damp = spray || col.moisture + dither(self.seed, 20, x, z, 0.3) > 0.5;
                 match self.geology.mossy(&strata, rock) {
                     Some(m) if r.mossy_rock && damp => m,
                     _ => rock,
@@ -337,7 +395,11 @@ impl Surface {
         } else {
             Self::near_water(x, z, grid)
         };
-        Some(self.top(x, z, col, near))
+        // Waterfalls are on rivers, so only rivers and their banks look for one.
+        let fall = (col.water == WaterKind::River || near.is_some_and(|n| n.river))
+            .then(|| nearest_fall(x, z, grid, NEAR))
+            .flatten();
+        Some(self.top(x, z, col, near, fall))
     }
 
     /// The nearest water within [`NEAR`] blocks of a dry column.
@@ -454,6 +516,9 @@ impl Surface {
 
         if let Some(w) = col.water_level {
             sink.fill_column(x, z, surface, w + 1, self.water);
+            if let Some(f) = col.fall {
+                sink.fill_column(x, z, w + 1, f + 1, self.falling);
+            }
         }
     }
 
@@ -470,16 +535,17 @@ impl Surface {
     /// The Minecraft biome for the 4×4×4 biome cell of a column whose lowest block is at `y`.
     /// Biomes are three-dimensional, so only the cells holding water need the water biome:
     /// above them the land biome keeps the grass and foliage colours of trees and reeds that
-    /// stand in the water, which the ocean biomes would turn a brighter green.
+    /// stand in the water, which the ocean biomes would turn a brighter green. A waterfall's
+    /// curtain is water too, so it keeps the colour of the pools above and below it.
     pub fn minecraft_biome_at(&self, col: &ColumnInfo, y: i32) -> &'static str {
         match col.water_level {
-            Some(w) if y <= w => water_biome(col).0,
+            Some(w) if y <= col.fall.unwrap_or(w).max(w) => water_biome(col).0,
             _ => land_biome(col.biome).0,
         }
     }
 
     pub fn preview_color(&self, x: i32, z: i32, col: &ColumnInfo) -> [u8; 3] {
-        let top = self.top(x, z, col, None);
+        let top = self.top(x, z, col, None, None);
         let m = self.kit.mat(top.mat);
         let mut c = m.color.map(|v| v as f32);
         if m.tinted {
@@ -497,6 +563,12 @@ impl Surface {
             for i in 0..3 {
                 let water = tex[i] * tint[i] as f32 / 255.0 * 1.6;
                 c[i] = c[i] * (1.0 - t) * (1.0 - 0.04 * col.depth()).max(0.6) + water * t;
+            }
+            // White water where a waterfall comes down.
+            if col.fall.is_some() {
+                for v in &mut c {
+                    *v = 0.4 * *v + 0.6 * 235.0;
+                }
             }
         }
         c.map(|v| v.clamp(0.0, 255.0) as u8)
