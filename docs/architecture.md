@@ -35,6 +35,8 @@ The engine cuts the map into 64×64 units. For each unit it does the following, 
 
 Because every unit is generated with a margin and then clipped, **every module must be deterministic per position**. A decision may depend only on the seed, the coordinates and the column data. Hash the coordinates (`noise::hash2`, `unit2`), and never draw from a random sequence shared across the map. Trees may reach at most `trees::MAX_REACH` blocks from their trunk, and other decor at most `decor::MAX_REACH` blocks from their column. `engine::MARGIN` must cover both. The test `engine::tests::pieces_agree_across_borders` checks this.
 
+A tree's shape must come from its `TreeRequest` and the ground alone, never from other trees or decor already in the sink. A piece near a border holds a different set of neighbouring trees than the piece next to it. The engine builds trees sorted by `(x, z, seed)`, so where crowns overlap, the later tree wins the shared cell in the same way in every piece. When writing, a tree may replace only air, water, plants and leaves.
+
 `Terrain::new(settings, Quality)` may do whole-map work up front: erosion, river networks, biome layout. `Terrain::column` must then be cheap, `Sync` and pure. `Quality::Preview` has to answer within about a second for the app.
 
 Blocks are resolved once, in each module's `new`, through `Blocks::id(name, props)`. That validates the state against the user's catalog and interns it in the shared `Palette`. A block missing from the catalog is an error at start-up, never a hole in the world. Write blocks only as `BlockId`s.
