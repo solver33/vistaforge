@@ -19,6 +19,7 @@ use vistaforge_core::catalog::Catalog;
 use vistaforge_core::column::Rect;
 use vistaforge_core::engine::{validate_palette, Generator};
 use vistaforge_core::level::{write_level_dat, LevelSettings};
+use vistaforge_core::settings::WorldHeight;
 use vistaforge_core::sink::{BlockId, BlockSink, Blocks, Palette};
 use vistaforge_core::terrain::{presets, Quality};
 use vistaforge_core::trees::render::render;
@@ -178,7 +179,7 @@ fn gallery_world(
                 cz,
                 &area,
                 &palette,
-                &|_, _| "minecraft:plains",
+                &|_, _, _| "minecraft:plains",
                 &mut scratch,
             );
             region.add(cx, cz, &compress_chunk(&tag)?)?;
@@ -194,6 +195,7 @@ fn gallery_world(
             border_center: (width as f64 / 2.0, depth as f64 / 2.0),
             border_size: width.max(depth) as f64,
             creative: true,
+            height: WorldHeight::Standard,
         },
         &world_dir,
     )?;

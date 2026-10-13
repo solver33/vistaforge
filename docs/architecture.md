@@ -58,7 +58,7 @@ The app uses `Generator::preview(res)`, which returns heights, water, colours, b
 ```
 vistaforge presets
 vistaforge preview  --catalog <catalog.json> --png out.png [--preset id | --settings file.json] [--size n] [--seed n] [--res px]
-vistaforge generate --catalog <catalog.json> --out <saves folder> [--preset id | --settings file.json] [--name n] [--size n] [--seed n] [--overwrite]
+vistaforge generate --catalog <catalog.json> --out <saves folder> [--preset id | --settings file.json] [--name n] [--size n] [--seed n] [--height standard|tall] [--overwrite]
 vistaforge testworld --catalog <catalog.json> --out <saves folder>     # 256×256 plains
 ```
 
@@ -68,6 +68,8 @@ vistaforge testworld --catalog <catalog.json> --out <saves folder>     # 256×25
 - Chunks are written with status `minecraft:full`, `isLightOn = 0` and no heightmaps. The game lights them and primes the heightmaps on load, which has been checked in game.
 - CR's water texture is darker than vanilla's. Tinted by plains water colour, lakes look very dark navy, so the biome cells holding water use ocean biomes with lighter water colours. Cells above the water keep the land biome, because ocean biomes would tint the leaves of trees standing in water.
 - CR layer blocks have `layers` 1–8. Plants (`PlantsDense`) take the `layers` value of the layer they stand on (8 on a full block).
+- `WorldSettings.world_height` is `standard` (Y −64 to 319) or `tall` (Y −64 to 2031, the most 1.20.1 allows). A tall world gets the data pack `datapacks/vistaforge-height`, which overrides `minecraft:overworld`'s dimension type, so no mod is needed. The game shows an "experimental settings" warning when such a world is opened. Fall3n checked a tall world in game on 2026-10-13: Distant Horizons draws the parts above Sodium's vertical render distance, and it ran at 71 FPS in 4K with shaders.
+- `Area` stores each column only up to the highest block set so far, in whole sections, and grows on demand; everything above is air. Code that reads `Area::column` must treat cells past the end of the slice as air. Terrain in a tall world may reach 20 blocks below the top (`Terrain::top`); standard worlds keep the 300 ceiling.
 - CR branches connect only to the branch family. `up` is set when the block below is sturdy or a branch. A post on a log pillar is forced to `up=true`, which is a deliberate deviation.
 
 ## Workstreams

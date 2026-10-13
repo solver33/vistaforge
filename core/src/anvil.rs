@@ -15,8 +15,8 @@ use flate2::Compression;
 
 use crate::catalog::BlockState;
 use crate::nbt::{self, Compound, Tag};
-use crate::sink::{BlockId, Palette};
-use crate::world::{Area, MIN_SECTION, MIN_Y, SECTIONS};
+use crate::sink::{BlockId, Palette, AIR};
+use crate::world::{Area, MIN_SECTION, MIN_Y};
 
 /// Minecraft 1.20.1.
 pub const DATA_VERSION: i32 = 3465;
@@ -165,19 +165,29 @@ pub fn chunk_tag(
     let columns: Vec<&[BlockId]> = (0..256)
         .map(|i: i32| area.column(x0 + i % 16, z0 + i / 16))
         .collect();
-    let mut sections = Vec::with_capacity(SECTIONS);
+    // Every column of an area stores the same number of cells; above them is only air.
+    let stored = columns[0].len();
+    let count = ((area.max_y() - MIN_Y + 1) / 16) as usize;
+    let mut sections = Vec::with_capacity(count);
     let mut blocks = [0 as BlockId; 4096];
-    for s in 0..SECTIONS {
-        for y in 0..16 {
-            let level = s * 16 + y;
-            for (i, col) in columns.iter().enumerate() {
-                blocks[y * 256 + i] = col[level];
+    let mut air: Option<Compound> = None;
+    for s in 0..count {
+        let states = if s * 16 >= stored {
+            air.get_or_insert_with(|| block_states(&[AIR; 4096], palette, scratch))
+                .clone()
+        } else {
+            for y in 0..16 {
+                let level = s * 16 + y;
+                for (i, col) in columns.iter().enumerate() {
+                    blocks[y * 256 + i] = col[level];
+                }
             }
-        }
+            block_states(&blocks, palette, scratch)
+        };
         sections.push(
             Compound::new()
                 .with("Y", (MIN_SECTION + s as i32) as i8)
-                .with("block_states", block_states(&blocks, palette, scratch))
+                .with("block_states", states)
                 .with("biomes", section_biomes(s))
                 .into(),
         );
@@ -325,7 +335,7 @@ mod tests {
         let tag = chunk_tag(1, 0, &area, &palette, &biome, &mut scratch);
         assert!(scratch.iter().all(|&s| s == u32::MAX));
         let secs = sections(&tag);
-        assert_eq!(secs.len(), SECTIONS);
+        assert_eq!(secs.len(), crate::world::SECTIONS);
 
         let Tag::Compound(bottom) = &secs[0] else {
             panic!()
@@ -364,10 +374,62 @@ mod tests {
         };
         assert!(biomes.get("data").is_none());
 
-        let Tag::Compound(top) = &secs[SECTIONS - 1] else {
+        let Tag::Compound(top) = &secs[crate::world::SECTIONS - 1] else {
             panic!()
         };
         let Some(Tag::Compound(bs)) = top.get("block_states") else {
+            panic!()
+        };
+        assert!(bs.get("data").is_none());
+    }
+
+    #[test]
+    fn tall_chunks_hold_every_section_up_to_the_top() {
+        let palette = Palette::new();
+        let stone = palette.intern(&BlockState {
+            name: "minecraft:stone".into(),
+            props: vec![],
+        });
+        let mut area = Area::for_world(Rect::new(0, 0, 16, 16), &palette, 2031, 80);
+        area.set(3, 1000, 4, stone);
+        let mut scratch = Vec::new();
+        let tag = chunk_tag(
+            0,
+            0,
+            &area,
+            &palette,
+            &|_, _, _| "minecraft:plains",
+            &mut scratch,
+        );
+        let secs = sections(&tag);
+        assert_eq!(secs.len(), 131);
+        let y_of = |s: &Tag| match s {
+            Tag::Compound(c) => match c.get("Y") {
+                Some(Tag::Byte(y)) => *y as i32,
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert_eq!(y_of(&secs[0]), -4);
+        assert_eq!(y_of(&secs[130]), 126);
+        // The stone at Y 1000 is in section 62 (Y 992..1007), local y 8.
+        let Tag::Compound(s62) = &secs[(1000 + 64) / 16] else {
+            panic!()
+        };
+        assert_eq!(y_of(&secs[(1000 + 64) / 16]), 62);
+        let Some(Tag::Compound(bs)) = s62.get("block_states") else {
+            panic!()
+        };
+        let Some(Tag::LongArray(data)) = bs.get("data") else {
+            panic!()
+        };
+        let idx = unpack(data, 4, 4096);
+        assert_eq!(idx[(8 * 16 + 4) * 16 + 3], 1);
+        // Sections above everything stored are plain air.
+        let Tag::Compound(last) = &secs[130] else {
+            panic!()
+        };
+        let Some(Tag::Compound(bs)) = last.get("block_states") else {
             panic!()
         };
         assert!(bs.get("data").is_none());

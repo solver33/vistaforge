@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use vistaforge_core::catalog::Catalog;
 use vistaforge_core::engine::{Generator, Preview};
 use vistaforge_core::png;
-use vistaforge_core::settings::WorldSettings;
+use vistaforge_core::settings::{WorldHeight, WorldSettings};
 use vistaforge_core::terrain::{presets, Quality};
 
 const USAGE: &str = "\
@@ -21,6 +21,7 @@ Map options:
   --settings <file.json>   settings saved by the app (a WorldSettings JSON)
   --preset <id>            start from a preset (default: plains)
   --name <world name>  --size <blocks>  --seed <n>
+  --height standard|tall   world top at Y 319 (default) or Y 2031 (adds a data pack)
 
 `generate` writes a Minecraft 1.20.1 world to <saves folder>/<world name>; point --out at the
 game's `saves` folder or copy the world folder there.";
@@ -74,6 +75,13 @@ fn settings(args: &[String], default_size: Option<u32>) -> Result<WorldSettings>
     }
     if let Some(seed) = flag(args, "--seed") {
         s.seed = seed.parse()?;
+    }
+    if let Some(height) = flag(args, "--height") {
+        s.world_height = match height.as_str() {
+            "standard" => WorldHeight::Standard,
+            "tall" => WorldHeight::Tall,
+            other => anyhow::bail!("--height must be standard or tall, not {other}"),
+        };
     }
     s.validate().map_err(anyhow::Error::msg)?;
     Ok(s)
