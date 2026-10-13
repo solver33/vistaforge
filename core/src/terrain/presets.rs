@@ -3,7 +3,7 @@
 //! both afterwards.
 
 use crate::biome::Biome;
-use crate::settings::{BiomeShare, Preset, Sliders};
+use crate::settings::{BiomeShare, Preset, Sliders, WorldHeight};
 
 use Biome::*;
 
@@ -26,6 +26,21 @@ fn preset(
             .collect(),
         sliders,
         sea_level: 63,
+        world_height: None,
+    }
+}
+
+/// A preset for a tall world (up to Y 2031), whose mountains use the extra height.
+fn tall(
+    id: &str,
+    name: &str,
+    description: &str,
+    mix: &[(Biome, f32)],
+    tune: impl FnOnce(&mut Sliders),
+) -> Preset {
+    Preset {
+        world_height: Some(WorldHeight::Tall),
+        ..preset(id, name, description, mix, tune)
     }
 }
 
@@ -461,6 +476,65 @@ pub fn all() -> Vec<Preset> {
                 s.mountains = 0.35;
                 s.trees = 0.2;
                 s.water = 0.2;
+            },
+        ),
+        // Tall worlds.
+        tall(
+            "epic_peaks",
+            "Epic peaks",
+            "Tall world: a range of rock and snow about 1500 blocks high above forested valleys.",
+            &[
+                (Taiga, 0.15),
+                (PineForest, 0.1),
+                (AlpineMeadow, 0.1),
+                (Mountains, 0.35),
+                (SnowyPeaks, 0.3),
+            ],
+            |s| {
+                s.relief = 0.65;
+                s.mountains = 1.0;
+                s.erosion = 0.85;
+                s.rivers = 0.6;
+                s.trees = 0.6;
+            },
+        ),
+        tall(
+            "great_valley",
+            "Great valley",
+            "Tall world: a wide green valley with a river and lakes under sheer mountain walls.",
+            &[
+                (Meadow, 0.25),
+                (Forest, 0.15),
+                (PineForest, 0.15),
+                (AlpineMeadow, 0.1),
+                (Mountains, 0.28),
+                (SnowyPeaks, 0.07),
+            ],
+            |s| {
+                s.relief = 0.6;
+                s.mountains = 1.0;
+                s.erosion = 0.75;
+                s.rivers = 0.8;
+                s.water = 0.6;
+            },
+        ),
+        tall(
+            "giant_fjords",
+            "Giant fjords",
+            "Tall world: mountains over a thousand blocks high plunging into long arms of the sea.",
+            &[
+                (Mountains, 0.35),
+                (Taiga, 0.3),
+                (SnowyPeaks, 0.1),
+                (AlpineMeadow, 0.1),
+                (PineForest, 0.15),
+            ],
+            |s| {
+                s.sea = 0.35;
+                s.islands = 0.75;
+                s.relief = 0.8;
+                s.erosion = 0.85;
+                s.mountains = 0.9;
             },
         ),
         // Coasts and islands.

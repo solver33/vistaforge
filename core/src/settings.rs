@@ -227,6 +227,9 @@ pub struct Preset {
     pub biomes: Vec<BiomeShare>,
     pub sliders: Sliders,
     pub sea_level: i32,
+    /// The world height the preset is made for, when it needs one (tall presets).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world_height: Option<WorldHeight>,
 }
 
 impl Preset {
@@ -240,7 +243,7 @@ impl Preset {
             sliders: self.sliders,
             sea_level: self.sea_level,
             edits: Vec::new(),
-            world_height: WorldHeight::Standard,
+            world_height: self.world_height.unwrap_or_default(),
         }
     }
 }

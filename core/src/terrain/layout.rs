@@ -420,6 +420,9 @@ pub fn params(regions: &Regions, mix: &Mix, n: usize, cell: f64, radius: usize) 
 pub struct Bands {
     pub members: Vec<Biome>,
     pub starts: Vec<f32>,
+    /// How far band edges wander and blend, relative to a standard world (more in a tall
+    /// world, whose bands are further apart).
+    pub spread: f32,
 }
 
 impl Bands {
@@ -431,6 +434,7 @@ impl Bands {
             return Self {
                 members: vec![Biome::Mountains, Biome::SnowyPeaks],
                 starts: vec![sea + 135.0],
+                spread: 1.0,
             };
         }
         heights.sort_by(|a, b| a.total_cmp(b));
@@ -448,13 +452,15 @@ impl Bands {
         Self {
             members: family.iter().map(|f| f.0).collect(),
             starts,
+            spread: 1.0,
         }
     }
 
     /// The band for a column, the neighbouring band it blends into, and the blend weight.
     /// `jitter` (about ±1) moves band edges so they are not contour lines.
     pub fn resolve(&self, h: f32, slope: f32, jitter: f32) -> (Biome, Biome, f32) {
-        let h = h + jitter * 7.0;
+        let h = h + jitter * 7.0 * self.spread;
+        let edge = 8.0 * self.spread;
         let mut band = 0;
         while band < self.starts.len() && h >= self.starts[band] {
             band += 1;
@@ -474,21 +480,21 @@ impl Bands {
         } else if biome == Biome::SnowyPeaks && slope > 1.7 && has(Biome::Mountains) {
             biome = Biome::Mountains;
         }
-        // Blend towards the nearest band edge within 8 blocks.
+        // Blend towards the nearest band edge within 8 blocks (times the spread).
         let mut other = biome;
         let mut blend = 0.0;
         if band > 0 {
             let d = h - self.starts[band - 1];
-            if d < 8.0 {
+            if d < edge {
                 other = pick(band - 1);
-                blend = 0.5 * (1.0 - d / 8.0);
+                blend = 0.5 * (1.0 - d / edge);
             }
         }
         if band < self.starts.len() {
             let d = self.starts[band] - h;
-            if d < 8.0 && 0.5 * (1.0 - d / 8.0) > blend {
+            if d < edge && 0.5 * (1.0 - d / edge) > blend {
                 other = pick(band + 1);
-                blend = 0.5 * (1.0 - d / 8.0);
+                blend = 0.5 * (1.0 - d / edge);
             }
         }
         if other == biome {
