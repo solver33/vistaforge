@@ -479,4 +479,46 @@ mod tests {
         assert!(shared.columns().any(|(x, z)| a.area.top(x, z).is_some()));
         assert_ne!(a.area.get(10, 40, 10), AIR);
     }
+
+    /// The same with trees as dense as the sliders allow, in a forest and on plains, where
+    /// crowns of trees planned by only one of two pieces meet over the shared columns.
+    #[test]
+    fn dense_trees_agree_across_borders() {
+        let Some(catalog) = catalog() else {
+            eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+            return;
+        };
+        let mut settings = WorldSettings {
+            size: 256,
+            biomes: [Biome::Forest, Biome::Plains]
+                .map(|biome| crate::settings::BiomeShare { biome, share: 1.0 })
+                .to_vec(),
+            ..WorldSettings::default()
+        };
+        settings.sliders.trees = 1.0;
+        let g = Generator::new(&settings, &catalog, Quality::Full).unwrap();
+        let pieces = [(0, 0), (40, 24), (88, 64), (24, 120)].map(|(x, z)| {
+            (
+                Rect::new(x, z, x + 64, z + 64),
+                g.generate(Rect::new(x, z, x + 64, z + 64)),
+            )
+        });
+        let mut trees = 0;
+        for (i, (ra, a)) in pieces.iter().enumerate() {
+            trees += a.trees;
+            for (rb, b) in &pieces[i + 1..] {
+                let shared = ra.intersect(rb);
+                if shared.x0 < shared.x1 && shared.z0 < shared.z1 {
+                    assert!(
+                        same_blocks(&a.area, &b.area, shared),
+                        "{ra:?} and {rb:?} differ"
+                    );
+                }
+            }
+        }
+        assert!(
+            trees >= 8,
+            "only {trees} trees: the test needs a dense patch"
+        );
+    }
 }

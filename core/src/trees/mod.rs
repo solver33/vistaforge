@@ -409,4 +409,61 @@ mod tests {
             }
         }
     }
+
+    /// A forest with trunks four blocks apart, built as the engine builds two overlapping
+    /// pieces: each gets every tree standing within `MAX_REACH` of its rect, in the same order.
+    /// Trees near one piece's far edge are missing from the other, and the shared columns must
+    /// still come out the same.
+    #[test]
+    fn dense_forest_pieces_agree() {
+        let Some(catalog) = catalog() else {
+            eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+            return;
+        };
+        let palette = Palette::new();
+        let b = Blocks::new(&catalog, &palette);
+        let trees = Trees::new(&b).unwrap();
+        let grass = b
+            .id("minecraft:grass_block", &[("snowy", "false")])
+            .unwrap();
+        let mut forest = Vec::new();
+        for gx in -12..24 {
+            for gz in -6..18 {
+                let h = crate::noise::hash2(5, gx, gz);
+                forest.push(TreeRequest {
+                    species: Species::ALL[(h % Species::ALL.len() as u64) as usize],
+                    x: gx as i32 * 4 + (h >> 8) as i32 % 3,
+                    y: 64,
+                    z: gz as i32 * 4 + (h >> 16) as i32 % 3,
+                    size: ((h >> 24) & 0xFF) as f32 / 255.0,
+                    seed: h,
+                });
+            }
+        }
+        forest.sort_by_key(|t| (t.x, t.z, t.seed));
+        let piece = |rect: Rect| {
+            let buffer = Rect::new(
+                rect.x0 - MAX_REACH,
+                rect.z0 - MAX_REACH,
+                rect.x1 + MAX_REACH,
+                rect.z1 + MAX_REACH,
+            );
+            let mut area = Area::new(buffer, &palette);
+            for (x, z) in buffer.columns() {
+                area.fill_column(x, z, 50, 64, grass);
+            }
+            for t in forest.iter().filter(|t| buffer.contains(t.x, t.z)) {
+                trees.build(t, &mut area);
+            }
+            area
+        };
+        let a = piece(Rect::new(0, 0, 48, 48));
+        let b = piece(Rect::new(24, 8, 72, 56));
+        let shared = Rect::new(24, 8, 48, 48);
+        let differ = shared
+            .columns()
+            .filter(|&(x, z)| a.column(x, z) != b.column(x, z))
+            .count();
+        assert_eq!(differ, 0, "{differ} shared columns differ");
+    }
 }
