@@ -220,23 +220,22 @@ fn trees_follow_the_biome() {
     );
 }
 
-/// Tall Conquest reeds stand as single, freshly placed blocks (`height` 1), never as a taller
-/// `height` on one block, which the game draws in broken pieces.
+/// Plants are built the way a player builds them by hand. A tall Conquest reed is one block whose
+/// `height` draws its model up into empty cells, never another plant block. Stackable grasses
+/// stack as real blocks that all keep `height` 1, sharing `random` and `layers` so the stack
+/// reads as one plant; a stacked `height` 2 would draw a third, detached piece on top.
 #[test]
-fn tall_plants_stand_as_single_blocks() {
+fn tall_plants_are_built_as_by_hand() {
     let Some(catalog) = catalog() else {
         eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
         return;
     };
     let palette = Palette::new();
     let w = World::new(&catalog, &palette);
-    let tall = |name: &str| {
-        catalog
-            .class_of(name)
-            .is_some_and(|c| c.starts_with("PlantsTall"))
-    };
-    assert!(tall("conquest:cattail_reeds"));
-    let mut seen = 0;
+    let class = |name: &str| catalog.class_of(name).unwrap_or_default().to_string();
+    assert_eq!(class("conquest:cattail_reeds"), "PlantsTall4");
+    assert_eq!(class("conquest:rushes"), "PlantsDenseStackableHeight2");
+    let (mut tall, mut taller, mut stacked) = (0, 0, 0);
     for rz in 0..3 {
         for rx in 0..5 {
             let rect = Rect::new(
@@ -245,21 +244,41 @@ fn tall_plants_stand_as_single_blocks() {
                 rx * REGION + 80,
                 rz * REGION + 80,
             );
-            let (area, _) = w.piece(rect, false, true);
+            let (area, _) = w.piece(rect, true, true);
             for (x, z) in rect.columns() {
                 let column = area.column(x, z);
-                for (i, &id) in column.iter().enumerate() {
-                    let state = palette.state(id);
-                    if !tall(&state.name) {
-                        continue;
+                let at = |i: usize| palette.state(column.get(i).copied().unwrap_or(AIR));
+                for i in 1..column.len() {
+                    let state = at(i);
+                    let c = class(&state.name);
+                    if let Some(n) = c.strip_prefix("PlantsTall") {
+                        tall += 1;
+                        let n: usize = n.parse().unwrap();
+                        let height: usize = state.get("height").unwrap().parse().unwrap();
+                        assert!(height <= n, "{state:?} at {x} {z}");
+                        taller += (height > 1) as usize;
+                        for k in 1..height {
+                            let above = at(i + k);
+                            assert!(
+                                above.name == "minecraft:air" || above.name == "minecraft:water",
+                                "{state:?} at {x} {z} reaches into {above:?}"
+                            );
+                        }
+                        assert!(!class(&at(i - 1).name).starts_with("PlantsTall"));
+                    } else if c == "PlantsDenseStackableHeight2" {
+                        assert_eq!(state.get("height"), Some("1"), "{state:?} at {x} {z}");
+                        let below = at(i - 1);
+                        if below.name == state.name {
+                            stacked += 1;
+                            assert_eq!(below.get("random"), state.get("random"));
+                            assert_eq!(below.get("layers"), state.get("layers"));
+                        }
                     }
-                    seen += 1;
-                    assert_eq!(state.get("height"), Some("1"), "{state:?} at {x} {z}");
-                    let above = palette.state(column[i + 1]);
-                    assert!(!tall(&above.name), "stacked at {x} {z}");
                 }
             }
         }
     }
-    assert!(seen > 50, "{seen}");
+    eprintln!("{tall} tall reeds, {taller} of them taller than a block; {stacked} stacked grasses");
+    assert!(tall > 50 && taller > tall / 3, "{tall} {taller}");
+    assert!(stacked > 50, "{stacked}");
 }
