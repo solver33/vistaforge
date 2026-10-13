@@ -109,6 +109,10 @@ pub struct Sliders {
     pub biome_blend: f32,
     /// Size of biome regions.
     pub biome_scale: f32,
+    /// Share of the map under sea (0 = landlocked, the default).
+    pub sea: f32,
+    /// Shape of the sea: 0 a coast along one side, 0.5 one large island, 1 an archipelago.
+    pub islands: f32,
 }
 
 impl Default for Sliders {
@@ -125,6 +129,8 @@ impl Default for Sliders {
             detail: 0.5,
             biome_blend: 0.5,
             biome_scale: 0.5,
+            sea: 0.0,
+            islands: 0.5,
         }
     }
 }
