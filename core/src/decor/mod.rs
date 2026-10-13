@@ -118,11 +118,18 @@ struct Spot {
     wet: bool,
 }
 
+/// The crown over a column: the litter it drops, and whether it is a conifer's.
+#[derive(Clone, Copy)]
+struct Shade {
+    litter: Option<PlantId>,
+    needles: bool,
+}
+
 /// What a block above the ground says about shade.
 #[derive(Clone, Copy)]
 enum Above {
-    /// Tree leaves: the ground under them takes this litter.
-    Leaves(Option<PlantId>),
+    /// Tree leaves or needles: the ground under them takes their litter.
+    Leaves(Shade),
     /// Wood: keep looking up.
     Wood,
     Other,
@@ -162,6 +169,8 @@ const LITTER: &[(&str, &str)] = &[
     ("aspen", "conquest:aspen_ground_leaves"),
     ("oak", "conquest:oak_ground_leaves"),
 ];
+/// Litter words of the needle-bearing trees.
+const CONIFERS: &[&str] = &["spruce", "pine", "larch"];
 const DEAD_BRANCHES: &str = "conquest:dead_deciduous_ground_branches";
 
 impl Decor {
@@ -299,7 +308,7 @@ impl Decor {
         z: i32,
         sink: &dyn BlockSink,
         cache: &mut HashMap<BlockId, Above>,
-    ) -> Option<Option<PlantId>> {
+    ) -> Option<Shade> {
         for dy in 1..=32 {
             let id = sink.get(x, y + dy, z);
             if id == AIR {
@@ -307,14 +316,16 @@ impl Decor {
             }
             let above = *cache.entry(id).or_insert_with(|| {
                 sink.palette().with(id, |s| {
-                    if s.name.contains("leaves") {
+                    if s.name.contains("leaves") || s.name.contains("needles") {
                         let litter = self
                             .litter
                             .iter()
                             .find(|(word, _)| s.name.contains(word))
-                            .or(self.litter.last())
-                            .map(|l| l.1);
-                        Above::Leaves(litter)
+                            .or(self.litter.last());
+                        Above::Leaves(Shade {
+                            litter: litter.map(|l| l.1),
+                            needles: litter.is_some_and(|l| CONIFERS.contains(&l.0)),
+                        })
                     } else if s.name.contains("log") || s.name.contains("branch") {
                         Above::Wood
                     } else {
@@ -385,11 +396,17 @@ impl Decor {
 
         // Fallen leaves under crowns, in drifts, and dead twigs in the woods.
         let soft = kind.organic() || matches!(kind, Kind::Soil | Kind::Mud);
-        if let Some(litter) = shade {
-            let drift = hash_unit(patch(s, salt::LITTER, x, z, 6.0)) < 0.45;
-            let p = if drift { 0.6 } else { 0.07 };
+        if let Some(shade) = shade {
+            // Conifers drop a fuller carpet of needles than broadleaf trees do of leaves.
+            let (share, inside, outside) = if shade.needles {
+                (0.6, 0.7, 0.15)
+            } else {
+                (0.45, 0.6, 0.07)
+            };
+            let drift = hash_unit(patch(s, salt::LITTER, x, z, 6.0)) < share;
+            let p = if drift { inside } else { outside };
             if soft && unit(s, salt::LITTER, x, z) < p {
-                if let Some(l) = litter {
+                if let Some(l) = shade.litter {
                     self.put(l, x, z, spot, 0, sink);
                     return;
                 }
