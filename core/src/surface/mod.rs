@@ -8,8 +8,8 @@
 //! patches (see `recipes`). Below the top come soil and then rock in wavy strata, so cliffs and
 //! banks show layered rock (see `geology`).
 //!
-//! [`Surface::fill`] depends only on the seed, the column position and the columns within two
-//! blocks of it, so overlapping pieces of the map agree.
+//! [`Surface::fill`] depends only on the seed, the column position and the columns within
+//! [`NEAR`] blocks of it, so overlapping pieces of the map agree.
 
 pub(crate) mod field;
 pub(crate) mod geology;
@@ -26,6 +26,10 @@ use crate::sink::{BlockId, BlockSink, Blocks, AIR};
 use crate::world::MIN_Y;
 
 use field::{dither, hash_unit, local_biome, patch, pick, smoothstep, woodland};
+
+fn wetland(b: Biome) -> bool {
+    matches!(b, Biome::Swamp | Biome::Marsh)
+}
 use geology::{Geology, Strata};
 use materials::{Kind, Kit, Mat};
 use recipes::{recipe, Mix};
@@ -80,12 +84,25 @@ pub(crate) struct Top {
     pub biome: Biome,
     pub mat: Mat,
     pub strata: Strata,
+    /// A low river bank: earth down to the water rather than exposed rock.
+    pub bank: bool,
 }
 
-/// The nearest water to a dry column, within two blocks.
+/// How far a dry column looks for water, in blocks: shores and river banks lie within it.
+pub(crate) const NEAR: i32 = 5;
+
+/// The nearest water to a dry column, within [`NEAR`] blocks.
 #[derive(Clone, Copy)]
 struct Near {
     level: i32,
+    /// Distance to it, in blocks.
+    dist: f32,
+    river: bool,
+}
+
+/// A dry column within reach of a river and less than four blocks above it.
+fn low_bank(col: &ColumnInfo, near: Option<Near>) -> bool {
+    near.is_some_and(|n| n.river && col.height < n.level as f32 + 4.0)
 }
 
 pub struct Surface {
@@ -179,24 +196,38 @@ impl Surface {
         }
         let r = self.recipe(biome);
         let slope = col.slope;
-        let rock = col
-            .rock
-            .max(smoothstep(r.rock_slope.0, r.rock_slope.1, slope));
+        // Low river banks are cut into earth: they take a steeper slope before turning to bare
+        // rock or scree.
+        let steeper = if low_bank(col, near) { 0.5 } else { 0.0 };
+        let rock = (col.rock - 0.7 * steeper).max(smoothstep(
+            r.rock_slope.0 + steeper,
+            r.rock_slope.1 + steeper,
+            slope,
+        ));
         if rock + dither(s, 12, x, z, 0.3) > 0.5 {
             return Zone::Rock;
         }
-        if slope + dither(s, 13, x, z, 0.25) > r.scree_slope
-            || col.flow + dither(s, 14, x, z, 0.15) > 0.65
+        // The terrain marks river banks with strong flow. Here they stay soft, damp ground that
+        // runs into the land around; only their slope makes them stony.
+        let flow = if near.is_some() || col.biome2 == Biome::River {
+            0.0
+        } else {
+            col.flow
+        };
+        if slope + dither(s, 13, x, z, 0.25) > r.scree_slope + steeper
+            || flow + dither(s, 14, x, z, 0.15) > 0.65
         {
             return Zone::Scree;
         }
         if let Some(n) = near {
-            if col.height < n.level as f32 + 2.2 + dither(s, 15, x, z, 0.6) {
+            // A ragged strip: wider in places, and gone where the land meets the water.
+            let reach = 2.0 + dither(s, 21, x, z, 1.3);
+            if n.dist <= reach && col.height < n.level as f32 + 2.2 + dither(s, 15, x, z, 0.6) {
                 return Zone::Shore;
             }
         }
         if slope + dither(s, 16, x, z, 0.25) > r.stony_slope
-            || col.flow + dither(s, 17, x, z, 0.15) > 0.4
+            || flow + dither(s, 17, x, z, 0.15) > 0.4
         {
             return Zone::Stony;
         }
@@ -225,8 +256,24 @@ impl Surface {
         }
     }
 
-    fn top(&self, x: i32, z: i32, col: &ColumnInfo, near: Option<Near>) -> Top {
+    /// The biome whose ground a column shows: its local biome, except that rivers and their banks
+    /// in swamps and marshes keep the wetland's mud, peat and moss.
+    fn ground_biome(&self, x: i32, z: i32, col: &ColumnInfo) -> Biome {
         let biome = local_biome(self.seed, x, z, col);
+        let land = if col.biome == Biome::River {
+            col.biome2
+        } else {
+            col.biome
+        };
+        if biome == Biome::River && wetland(land) {
+            land
+        } else {
+            biome
+        }
+    }
+
+    fn top(&self, x: i32, z: i32, col: &ColumnInfo, near: Option<Near>) -> Top {
+        let biome = self.ground_biome(x, z, col);
         let zone = self.zone(x, z, col, biome, near);
         let strata = self.geology.strata(x, z);
         let r = self.recipe(biome);
@@ -236,13 +283,21 @@ impl Surface {
             Zone::Wet => self.choose(&r.wet, 3, x, z, strata.suite),
             Zone::Stony => self.choose(&r.stony, 4, x, z, strata.suite),
             Zone::Scree => self.choose(&r.scree, 5, x, z, strata.suite),
-            Zone::Shore => self.choose(&r.shore, 6, x, z, strata.suite),
+            Zone::Shore => {
+                // River banks are damp and mossy wherever they run; lakes and the sea keep their
+                // biome's beaches.
+                let shore = match near {
+                    Some(n) if n.river && !wetland(biome) => &self.recipe(Biome::River).shore,
+                    _ => &r.shore,
+                };
+                self.choose(shore, 6, x, z, strata.suite)
+            }
             Zone::Bed(d) => {
                 let beds = match col.water {
-                    WaterKind::River if biome != Biome::River => &self.river_beds,
-                    WaterKind::Swamp if !matches!(biome, Biome::Swamp | Biome::Marsh) => {
-                        &self.swamp_beds
+                    WaterKind::River if biome != Biome::River && !wetland(biome) => {
+                        &self.river_beds
                     }
+                    WaterKind::Swamp if !wetland(biome) => &self.swamp_beds,
                     _ => &r.beds,
                 };
                 self.choose(&beds[d as usize], 7 + d as u64, x, z, strata.suite)
@@ -262,13 +317,14 @@ impl Surface {
             biome,
             mat,
             strata,
+            bank: zone != Zone::Rock && low_bank(col, near),
         }
     }
 
     /// The biome a column shows and its zone, without looking at its neighbours (so shores
     /// aren't told apart from the land behind them) and without working out the material.
     pub(crate) fn biome_zone(&self, x: i32, z: i32, col: &ColumnInfo) -> (Biome, Zone) {
-        let biome = local_biome(self.seed, x, z, col);
+        let biome = self.ground_biome(x, z, col);
         (biome, self.zone(x, z, col, biome, None))
     }
 
@@ -284,23 +340,25 @@ impl Surface {
         Some(self.top(x, z, col, near))
     }
 
-    /// The nearest water within two blocks of a dry column.
+    /// The nearest water within [`NEAR`] blocks of a dry column.
     fn near_water(x: i32, z: i32, grid: &ColumnGrid) -> Option<Near> {
-        let mut best: Option<(i32, i32)> = None;
-        for dx in -2i32..=2 {
-            for dz in -2i32..=2 {
-                let Some(c) = grid.try_get(x + dx, z + dz) else {
+        let mut best: Option<(i32, &ColumnInfo)> = None;
+        for dx in -NEAR..=NEAR {
+            for dz in -NEAR..=NEAR {
+                let d = dx * dx + dz * dz;
+                if d > NEAR * NEAR || best.is_some_and(|(bd, _)| d >= bd) {
                     continue;
-                };
-                if let Some(level) = c.water_level {
-                    let d = dx * dx + dz * dz;
-                    if best.is_none_or(|(bd, _)| d < bd) {
-                        best = Some((d, level));
-                    }
+                }
+                if let Some(c) = grid.try_get(x + dx, z + dz).filter(|c| c.is_wet()) {
+                    best = Some((d, c));
                 }
             }
         }
-        best.map(|(_, level)| Near { level })
+        best.map(|(d, c)| Near {
+            level: c.water_level.unwrap_or_default(),
+            dist: (d as f32).sqrt(),
+            river: c.water == WaterKind::River,
+        })
     }
 
     /// The lowest ground among the eight neighbours: rock is visible down to there.
@@ -365,7 +423,13 @@ impl Surface {
             _ => {
                 let flat = 1.0 - smoothstep(0.3, 1.4, col.slope);
                 let n = value2(self.seed ^ 0x501, x as f64 / 11.0, z as f64 / 11.0) as f32;
-                ((r.soil_depth * flat * (1.0 + 0.35 * n)).round() as i32).max(1)
+                let d = ((r.soil_depth * flat * (1.0 + 0.35 * n)).round() as i32).max(1);
+                // Banks show earth down to the water.
+                if top.bank {
+                    d.max(4)
+                } else {
+                    d
+                }
             }
         };
         for k in 1..depth {

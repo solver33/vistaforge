@@ -13,10 +13,9 @@
 use std::f32::consts::{PI, TAU};
 
 use super::kit::{Leaf, Wood};
-#[cfg(test)]
-use super::plan::Thick;
 use super::plan::{
-    add, angles, dir, length, scale, sub, unit3, Piece, Plan, FOOT, MOSSY, PILLAR_PX, STUMP, V3,
+    add, angles, dir, length, scale, sub, unit3, Piece, Plan, Thick, FOOT, MOSSY, PILLAR_PX, STUMP,
+    V3,
 };
 use super::{Species, TreeRequest, MAX_REACH};
 use crate::noise::Rng;
@@ -193,6 +192,27 @@ impl Tree<'_> {
         moss: i32,
     ) -> V3 {
         let mut top = self.axis(0.5);
+        // Thick trunks flare into a few buttress roots: round lobes on the edge of the foot,
+        // drawn with it as one shape of stump pieces.
+        let mut foot = Vec::new();
+        let base = radius(0.0, 0.0);
+        if base >= 0.6 {
+            let (ox, oz) = offset(0.0);
+            let n = 3 + (base * 1.5).min(2.0) as i32 + self.rng.range(0, 1);
+            let az0 = self.f() * TAU;
+            for i in 0..n {
+                let az = az0 + i as f32 * TAU / n as f32 + self.between(-0.35, 0.35);
+                let r = (base * self.between(0.45, 0.6)).clamp(0.35, 1.0);
+                let out = base + r * self.between(-0.1, 0.35);
+                foot.push((
+                    self.x + ox + az.cos() * out,
+                    self.z + oz + az.sin() * out,
+                    r,
+                ));
+            }
+        }
+        // The cell a trunk thinner than a pillar stands in, on the level below.
+        let mut thin: Option<[i32; 3]> = None;
         for level in 0..height.max(1) {
             let t = level as f32 / height.max(1) as f32;
             let (ox, oz) = offset(t);
@@ -207,26 +227,32 @@ impl Tree<'_> {
             let (mut cx, mut cz) = (self.x + ox, self.z + oz);
             let r = radius(t, level as f32);
             if r < 0.4 {
-                // Thinner than a pillar: one piece in one cell, not slivers in four.
-                (cx, cz) = (cx.floor() + 0.5, cz.floor() + 0.5);
+                // Thinner than a pillar: one piece in one cell, not slivers in four. It stays
+                // over the cell below until the trunk has leant well out of it, then steps
+                // across with a joint on the level below, so the pieces always meet.
+                let y = self.y + level;
+                let mut c = [cx.floor() as i32, y, cz.floor() as i32];
+                if let Some(below) = thin {
+                    let off = |a: usize, v: f32| (v - (below[a] as f32 + 0.5)).abs();
+                    if off(0, cx) <= 0.95 && off(2, cz) <= 0.95 {
+                        c = [below[0], y, below[2]];
+                    } else {
+                        self.plan
+                            .join(below, [c[0], below[1], c[2]], pillar_for(32.0 * r));
+                    }
+                }
+                thin = Some(c);
+                (cx, cz) = (c[0] as f32 + 0.5, c[2] as f32 + 0.5);
+            } else {
+                thin = None;
             }
-            self.plan.disc(self.y + level, cx, cz, r);
+            if level == 0 {
+                foot.push((cx, cz, r));
+                self.plan.blob(self.y, &foot);
+            } else {
+                self.plan.disc(self.y + level, cx, cz, r);
+            }
             top = [cx, (self.y + level) as f32 + 0.5, cz];
-        }
-        // Thick trunks spread a few roots over the ground. They are trunk feet too, so each
-        // one settles onto the ground of its own column, or disappears into a rising slope.
-        let base = radius(0.0, 0.0);
-        if base >= 0.6 {
-            self.plan.flags = FOOT | if moss > 0 { MOSSY } else { 0 };
-            let n = 2 + (base * 2.0).min(3.0) as i32 + self.rng.range(0, 1);
-            let az0 = self.f() * TAU;
-            for i in 0..n {
-                let az = az0 + i as f32 * TAU / n as f32 + self.between(-0.4, 0.4);
-                let start = self.axis(0.5);
-                let len = base + self.between(1.0, 1.4 + base);
-                let end = add(start, scale(dir(az, 0.0), len));
-                self.plan.limb(&[(start, 4.5), (end, 2.0)]);
-            }
         }
         self.plan.flags = 0;
         top
@@ -593,11 +619,27 @@ impl Tree<'_> {
                 };
                 (hh, d * 0.8, az, self.between(0.08, 0.16))
             };
-            self.birch_stem(i, stems, hh, dd, lean_az, lean);
+            let base = self.birch_stem(i, stems, hh, dd, lean_az, lean);
+            // Stems of a clump grow from one root: join their feet.
+            if i > 0 {
+                let main = super::plan::cell_of(self.axis(0.5));
+                self.plan.flags = FOOT | STUMP;
+                self.plan.join(main, base, Piece::Branch(Thick::Large));
+                self.plan.flags = 0;
+            }
         }
     }
 
-    fn birch_stem(&mut self, i: i32, stems: i32, h: f32, d: f32, lean_az: f32, lean: f32) {
+    /// One stem of a birch; returns the cell it stands in.
+    fn birch_stem(
+        &mut self,
+        i: i32,
+        stems: i32,
+        h: f32,
+        d: f32,
+        lean_az: f32,
+        lean: f32,
+    ) -> [i32; 3] {
         let s = self.s;
         let base = if stems > 1 && i > 0 {
             let (dx, dz) =
@@ -659,6 +701,7 @@ impl Tree<'_> {
         });
         let stubs = self.rng.range(0, 2);
         self.stubs(stubs, 1.0, y0 - 1.0, 0.0);
+        super::plan::cell_of(base)
     }
 
     /// Spruce: a straight trunk to the very top, tapering to a thin pillar, with whorls of
@@ -1133,10 +1176,13 @@ impl Tree<'_> {
         };
         let n = 2 + (2.0 * s) as i32;
         let az0 = self.f() * TAU;
+        // Stems leave from the second cell of the stump: one on the ground would sink into
+        // the Conquest layer there and come apart from the bush.
+        let fork = add(base, [0.0, 1.0, 0.0]);
         for i in 0..n {
             let az = az0 + i as f32 * TAU / n as f32 + self.between(-0.4, 0.4);
             let el = self.between(0.4, 0.9);
-            self.grow(base, dir(az, el), rb * 0.8, 2.4, 1.6, &st, 0);
+            self.grow(fork, dir(az, el), rb * 0.8, 2.4, 1.6, &st, 0);
         }
         let seed = self.seed;
         self.plan.clump(

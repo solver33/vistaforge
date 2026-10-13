@@ -31,7 +31,7 @@ use anyhow::Result;
 use crate::biome::Biome;
 use crate::column::{ColumnGrid, ColumnInfo, Rect, WaterKind};
 use crate::noise::unit2;
-use crate::settings::{Sliders, WorldSettings};
+use crate::settings::{Sliders, WorldHeight, WorldSettings};
 use crate::world::MIN_Y;
 
 use edits::Zone;
@@ -52,7 +52,7 @@ pub enum Quality {
 const CELL: f64 = 8.0;
 /// Droplet erosion grid spacing in blocks.
 const FINE: f64 = 2.0;
-/// Highest ground allowed (the world ends at 319).
+/// Highest ground allowed in a standard world (it ends at 319).
 const TOP: f32 = 300.0;
 
 struct Fine {
@@ -65,6 +65,8 @@ struct Fine {
 pub struct Terrain {
     seed: u64,
     size: i32,
+    /// Highest ground allowed: [`TOP`], or 20 blocks under the top of a tall world.
+    top: f32,
     /// Water fills every Y below this at sea.
     sea_surface: i32,
     sliders: Sliders,
@@ -417,6 +419,10 @@ impl Terrain {
         let mut terrain = Self {
             seed,
             size,
+            top: match settings.world_height {
+                WorldHeight::Standard => TOP,
+                tall => (tall.max_y() - 20) as f32,
+            },
             sea_surface,
             sliders: sl,
             bands,
@@ -701,7 +707,19 @@ impl Terrain {
         let mut hs = hs as f32;
         let mut h =
             hs + (self.rough.bilinear(fx, fz) * self.detail_amp * self.micro(fx, fz)) as f32;
-        let cut = self.rivers.at(fx, fz);
+        let mut cut = self.rivers.at(fx, fz);
+        if let (Some(c), true) = (&mut cut, swampy > 0.3) {
+            // In wetlands rivers are slow channels at the level of the pools, not cut into
+            // the ground. The lift fades in, so the surface rises in 1-block steps at the
+            // wetland's edge; banks round up so they hold the higher water beside them.
+            let pools = self.wet_table.floor() as f32;
+            let lift = smoothstep(0.3, 0.6, swampy) as f32 * (pools - c.level as f32).max(0.0);
+            let (up, banks) = (lift.round() as i32, lift.ceil() as i32);
+            c.cut += lift;
+            c.channel = c.channel.map(|s| s + up);
+            c.bank = c.bank.map(|b| b + banks);
+            c.level += up;
+        }
         if let Some(c) = &cut {
             let jitter = (perlin(self.seed ^ 0x51F, fx / 13.0, fz / 13.0)
                 + 0.5 * perlin(self.seed ^ 0x520, fx / 5.0, fz / 5.0))
@@ -752,7 +770,7 @@ impl Terrain {
                 h = h.max(floor);
             }
         }
-        let h = h.clamp(MIN_Y as f32 + 4.0, TOP);
+        let h = h.clamp(MIN_Y as f32 + 4.0, self.top);
 
         // Beaches: low, gentle ground beside the sea or a large lake.
         let mut beach = 0.0;
@@ -842,6 +860,11 @@ impl Terrain {
         let (fx, fz) = (x as f64, z as f64);
         let h = s.h;
         let jitter = perlin(self.seed ^ 0x717, fx / 31.0, fz / 31.0) as f32;
+        let bank_noise = if s.river_edge < 7.0 {
+            0.5 + 0.5 * perlin(self.seed ^ 0xBA4, fx / 9.0, fz / 9.0) as f32
+        } else {
+            0.0
+        };
         let (c1, c2, t) = self.regions_at(fx, fz);
         let resolve = |c: u8| match self.mix.categories[c as usize].biome {
             Some(b) => (b, b, 0.0),
@@ -903,9 +926,14 @@ impl Terrain {
                     biome = Biome::Beach;
                     biome2 = land;
                     blend = 0.5 * (1.0 - s.beach.min(1.0));
-                } else if s.river_edge < 3.0 && 0.5 * (1.0 - s.river_edge / 3.0) > blend {
-                    biome2 = Biome::River;
-                    blend = 0.5 * (1.0 - s.river_edge / 3.0);
+                } else if s.river_edge < 5.0 {
+                    // The bank band narrows and widens along the river.
+                    let band = 1.0 + 3.5 * bank_noise;
+                    let b = 0.5 * (1.0 - s.river_edge.max(0.0) / band).max(0.0).powi(2);
+                    if b > blend {
+                        biome2 = Biome::River;
+                        blend = b;
+                    }
                 }
             }
         }
@@ -956,8 +984,9 @@ impl Terrain {
         if let Some(f) = &self.fine {
             flow = flow.max(f.flow.bilinear(fx, fz) as f32);
         }
-        if s.river_edge < 6.0 {
-            flow = flow.max(0.9 * (1.0 - s.river_edge.max(0.0) / 6.0));
+        if s.river_edge < 7.0 {
+            let reach = 2.0 + 5.0 * bank_noise;
+            flow = flow.max(0.85 * (1.0 - s.river_edge.max(0.0) / reach).max(0.0).powf(1.5));
         }
         if s.water == WaterKind::River {
             flow = 1.0;

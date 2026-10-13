@@ -80,8 +80,8 @@ fn every_plant_is_in_the_catalog() {
     assert!(w.decor.rubble.iter().all(|r| !r.is_empty()));
 }
 
-/// Overlapping pieces agree on every block in every biome: plants, rocks, logs and boulders
-/// come out the same whichever piece builds them.
+/// Overlapping pieces agree on every block in every biome: trees, plants, rocks, logs and
+/// boulders come out the same whichever piece builds them.
 #[test]
 fn pieces_agree_in_every_biome() {
     let Some(catalog) = catalog() else {
@@ -95,8 +95,8 @@ fn pieces_agree_in_every_biome() {
             let (x0, z0) = (rx * REGION + 10, rz * REGION + 10);
             let a = Rect::new(x0, z0, x0 + 64, z0 + 64);
             let b = Rect::new(x0 + 23, z0 + 37, x0 + 87, z0 + 101);
-            let (pa, _) = w.piece(a, false, true);
-            let (pb, _) = w.piece(b, false, true);
+            let (pa, _) = w.piece(a, true, true);
+            let (pb, _) = w.piece(b, true, true);
             let shared = a.intersect(&b);
             for (x, z) in shared.columns() {
                 assert_eq!(
@@ -128,12 +128,18 @@ fn every_biome_is_detailed() {
             let (full, _) = w.piece(rect, true, true);
             let mut changed = 0;
             let mut names = std::collections::HashMap::<String, usize>::new();
-            let mut dry = 0;
+            let (mut dry, mut open) = (0, 0);
             for (x, z) in rect.columns() {
-                if !grid.get(x, z).is_wet() {
-                    dry += 1;
-                }
                 let (a, b) = (bare.column(x, z), full.column(x, z));
+                let col = grid.get(x, z);
+                if !col.is_wet() {
+                    dry += 1;
+                    // Trunks and low branches take some of the floor; decor goes on the rest.
+                    let (y, _) = col.ground();
+                    if a[(y + 1 - crate::world::MIN_Y) as usize] == crate::sink::AIR {
+                        open += 1;
+                    }
+                }
                 for (&p, &q) in a.iter().zip(b) {
                     if p != q {
                         changed += 1;
@@ -150,7 +156,7 @@ fn every_biome_is_detailed() {
                 .map(|(n, c)| format!("{}×{c}", n.trim_start_matches("conquest:")))
                 .collect();
             eprintln!(
-                "{biome:?}: {changed} decor blocks over {dry} dry columns, {} kinds: {}",
+                "{biome:?}: {changed} decor blocks over {dry} dry columns ({open} open), {} kinds: {}",
                 names.len(),
                 top.join(" ")
             );
@@ -212,4 +218,48 @@ fn trees_follow_the_biome() {
             .count()
             > taiga.len() / 2
     );
+}
+
+/// Tall Conquest reeds stand as single, freshly placed blocks (`height` 1), never as a taller
+/// `height` on one block, which the game draws in broken pieces.
+#[test]
+fn tall_plants_stand_as_single_blocks() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let w = World::new(&catalog, &palette);
+    let tall = |name: &str| {
+        catalog
+            .class_of(name)
+            .is_some_and(|c| c.starts_with("PlantsTall"))
+    };
+    assert!(tall("conquest:cattail_reeds"));
+    let mut seen = 0;
+    for rz in 0..3 {
+        for rx in 0..5 {
+            let rect = Rect::new(
+                rx * REGION + 16,
+                rz * REGION + 16,
+                rx * REGION + 80,
+                rz * REGION + 80,
+            );
+            let (area, _) = w.piece(rect, false, true);
+            for (x, z) in rect.columns() {
+                let column = area.column(x, z);
+                for (i, &id) in column.iter().enumerate() {
+                    let state = palette.state(id);
+                    if !tall(&state.name) {
+                        continue;
+                    }
+                    seen += 1;
+                    assert_eq!(state.get("height"), Some("1"), "{state:?} at {x} {z}");
+                    let above = palette.state(column[i + 1]);
+                    assert!(!tall(&above.name), "stacked at {x} {z}");
+                }
+            }
+        }
+    }
+    assert!(seen > 50, "{seen}");
 }

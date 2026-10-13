@@ -105,9 +105,22 @@ impl Piece {
         !matches!(self, Piece::Empty | Piece::Leaves(_))
     }
 
-    /// Pieces that Conquest can stretch down into a layer block below (`down=true`).
+    /// Pieces that Conquest can stretch down into a layer block below (`down=true`, or
+    /// `extension_toggle=true` on a vertical slab).
     pub(super) fn has_down(self) -> bool {
-        matches!(self, Piece::Pillar(_) | Piece::Quarter(..))
+        matches!(
+            self,
+            Piece::Pillar(_) | Piece::Quarter(..) | Piece::Slab(..)
+        )
+    }
+
+    /// The pillar as wide as a branch's post, which can reach down into a layer block.
+    pub(super) fn post_pillar(t: Thick) -> Piece {
+        match t {
+            Thick::Large => Piece::Pillar(2),
+            Thick::Medium => Piece::Pillar(4),
+            Thick::Small => Piece::Pillar(1),
+        }
     }
 
     /// Which piece wins when two parts of a tree want the same cell: roughly, the thicker one.
@@ -209,35 +222,57 @@ impl Plan {
         }
     }
 
-    /// Puts a piece unless the cell already holds a thicker one. A branch that passes through
-    /// a thick slab or quarter of a round trunk turns it into bark: the swelling where a limb
-    /// leaves the trunk, which also closes the gap between the limb and the trunk. A thin one
-    /// stays as it is, so twigs don't fill out the top of a tapering trunk.
+    /// Puts a piece unless the cell already holds a thicker one.
+    ///
+    /// A branch that passes through a vertical piece of a round trunk always takes the cell,
+    /// so its arms meet the next cell of the limb instead of stopping short of a piece set
+    /// back from the face. Through a piece 8 px or wider it becomes bark: the swelling where
+    /// a limb leaves the trunk. Through a thinner one it becomes a branch at least as thick,
+    /// so twigs don't fill out the top of a tapering trunk.
     pub fn put(&mut self, x: i32, y: i32, z: i32, piece: Piece) {
         let (wood, flags) = (self.wood, self.flags);
         let Some(i) = self.index(x, y, z) else {
             return;
         };
         let old = self.cells[i];
-        let piece = match (old.piece, piece) {
-            (Piece::Slab(l, _), Piece::Branch(_)) if SLAB_PX[l as usize - 1] >= 8 => Piece::Wood,
-            (Piece::Quarter(l, _), Piece::Branch(_)) if QUARTER_PX[l as usize - 1] >= 8 => {
-                Piece::Wood
-            }
-            (Piece::Slab(..) | Piece::Quarter(..), Piece::Branch(_)) => return,
-            _ => piece,
+        let width = match old.piece {
+            Piece::Slab(l, _) => Some(SLAB_PX[l as usize - 1]),
+            Piece::Quarter(l, _) => Some(QUARTER_PX[l as usize - 1]),
+            Piece::Pillar(l) => Some(PILLAR_PX[l as usize - 1]),
+            _ => None,
         };
-        if piece.rank() > old.piece.rank() {
+        let forced = match (width, piece) {
+            (Some(w), Piece::Branch(_))
+                if w >= 12 || (w >= 8 && !matches!(old.piece, Piece::Pillar(_))) =>
+            {
+                Some(Piece::Wood)
+            }
+            (Some(w), Piece::Branch(t)) => {
+                let fit = match w {
+                    8.. => Thick::Large,
+                    6.. => Thick::Medium,
+                    _ => Thick::Small,
+                };
+                Some(Piece::Branch(if fit.width() > t.width() { fit } else { t }))
+            }
+            _ => None,
+        };
+        let piece = forced.unwrap_or(piece);
+        if forced.is_some() || piece.rank() > old.piece.rank() {
             self.cells[i] = Cell {
-                piece,
+                piece: if old.links != 0 {
+                    jointed(piece)
+                } else {
+                    piece
+                },
                 wood,
-                flags: flags | (old.flags & FOOT),
+                flags: flags | (old.flags & (FOOT | STUMP)),
                 links: old.links,
             };
         }
     }
 
-    /// Joins two side-by-side cells of a limb.
+    /// Joins two side-by-side cells of a limb (see [`jointed`]).
     fn link(&mut self, a: [i32; 3], b: [i32; 3]) {
         for (from, to) in [(a, b), (b, a)] {
             let side = SIDES
@@ -248,7 +283,9 @@ impl Plan {
                 from[1] == to[1],
                 self.index(from[0], from[1], from[2]),
             ) {
-                self.cells[i].links |= 1 << side;
+                let cell = &mut self.cells[i];
+                cell.links |= 1 << side;
+                cell.piece = jointed(cell.piece);
             }
         }
     }
@@ -283,17 +320,106 @@ impl Plan {
     /// cell — full logs inside, vertical slabs on the flat sides, vertical quarters on the
     /// diagonals, a pillar when the whole trunk is thinner than a block.
     pub fn disc(&mut self, y: i32, cx: f32, cz: f32, r: f32) {
-        let r = r.max(0.03);
-        let (i0, i1) = ((cx - r).floor() as i32, (cx + r).floor() as i32);
-        let (k0, k1) = ((cz - r).floor() as i32, (cz + r).floor() as i32);
+        self.blob(y, &[(cx, cz, r)]);
+    }
+
+    /// Like [`Plan::disc`] for the union of several circles `(cx, cz, r)`: the foot of a
+    /// trunk with its buttress roots, drawn as one shape so neighbouring pieces meet.
+    pub fn blob(&mut self, y: i32, circles: &[(f32, f32, f32)]) {
+        let (mut i0, mut i1, mut k0, mut k1) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        for &(cx, cz, r) in circles {
+            let r = r.max(0.03);
+            i0 = i0.min((cx - r).floor() as i32);
+            i1 = i1.max((cx + r).floor() as i32);
+            k0 = k0.min((cz - r).floor() as i32);
+            k1 = k1.max((cz + r).floor() as i32);
+        }
         for i in i0..=i1 {
             for k in k0..=k1 {
-                let mask = disc_mask(cx - i as f32, cz - k as f32, r);
+                let mut mask = [0u64; 4];
+                for &(cx, cz, r) in circles {
+                    let m = disc_mask(cx - i as f32, cz - k as f32, r.max(0.03));
+                    for w in 0..4 {
+                        mask[w] |= m[w];
+                    }
+                }
                 if let Some(piece) = best_piece(&mask) {
                     self.put(i, y, k, piece);
                 }
             }
         }
+        let placed: Vec<[i32; 3]> = (i0..=i1)
+            .flat_map(|i| (k0..=k1).map(move |k| [i, y, k]))
+            .filter(|c| self.piece(c[0], c[1], c[2]).is_wood())
+            .collect();
+        if placed.len() > 1 {
+            self.prune(&placed);
+        }
+    }
+
+    /// Leaves out each of `cells` that holds a thin sliver (a piece no wider than a quarter
+    /// of the cell) touching neither a neighbour on its level nor the piece above: it would
+    /// stand apart from the trunk, a stick beside it.
+    pub fn prune(&mut self, cells: &[[i32; 3]]) {
+        self.leave_out(cells, 4 * 16, false);
+    }
+
+    /// Leaves out the pieces among `cells` that only meet each other: held neither by the
+    /// piece above one of them nor by a piece beside them that isn't in `cells`. They would
+    /// stand apart from the rest of the tree.
+    pub fn prune_apart(&mut self, cells: &[[i32; 3]]) {
+        self.leave_out(cells, 16 * 16, true);
+    }
+
+    fn leave_out(&mut self, cells: &[[i32; 3]], max: u32, apart: bool) {
+        let mut doubt: Vec<[i32; 3]> = cells
+            .iter()
+            .copied()
+            .filter(|&[i, y, k]| footprint(self.piece(i, y, k)).is_some_and(|m| count(&m) <= max))
+            .collect();
+        loop {
+            let before = doubt.len();
+            let held: Vec<bool> = doubt
+                .iter()
+                .map(|&c| self.held(c, if apart { &doubt } else { &[] }))
+                .collect();
+            let mut n = 0;
+            doubt.retain(|_| {
+                n += 1;
+                !held[n - 1]
+            });
+            // Without `apart`, each piece stands or falls on its own neighbours at once.
+            if doubt.len() == before || !apart {
+                break;
+            }
+        }
+        for [i, y, k] in doubt {
+            self.set(i, y, k, Cell::default());
+        }
+    }
+
+    /// Whether the piece in `c` meets the piece above it or one beside it, leaving out those
+    /// in `doubt`.
+    fn held(&self, [i, y, k]: [i32; 3], doubt: &[[i32; 3]]) -> bool {
+        let reach = |c: Cell, y: i32| y - (c.flags & DOWN != 0) as i32..=y;
+        let cell = self.get(i, y, k);
+        let Some(m) = footprint(cell.piece) else {
+            return true;
+        };
+        let span = reach(cell, y);
+        let beside = (y - 1..=y + 1).any(|v| {
+            SIDES.iter().enumerate().any(|(side, &(dx, dz))| {
+                let n = self.get(i + dx, v, k + dz);
+                let r = reach(n, v);
+                !doubt.contains(&[i + dx, v, k + dz])
+                    && r.start() <= span.end()
+                    && span.start() <= r.end()
+                    && footprint(n.piece).is_some_and(|f| meets(&m, &f, side))
+            })
+        });
+        let above = !doubt.contains(&[i, y + 1, k])
+            && footprint(self.piece(i, y + 1, k)).is_some_and(|n| (0..4).any(|w| m[w] & n[w] != 0));
+        beside || above
     }
 
     /// A limb through `points` (centre and radius in pixels), walked cell by cell so every
@@ -308,7 +434,20 @@ impl Plan {
         let Some(&(first, r)) = points.first() else {
             return;
         };
+        // A limb grows out of the wood it starts beside: begin in the nearest cell of it, so
+        // the two meet by a face even where the parent's walk strayed from its line. A slab
+        // or quarter at the edge of a trunk swells into bark there, the collar the limb grows
+        // from, which meets the trunk's pieces round it where a branch post would stand
+        // clear of them.
         let mut cur = cell_of(first);
+        if !self.piece(cur[0], cur[1], cur[2]).is_wood() {
+            cur = self.nearest(first, 2, Piece::is_wood).unwrap_or(cur);
+        }
+        if let Some(i) = self.index(cur[0], cur[1], cur[2]) {
+            if matches!(self.cells[i].piece, Piece::Quarter(..) | Piece::Slab(..)) {
+                self.cells[i].piece = Piece::Wood;
+            }
+        }
         let up = points.get(1).map(|p| p.0[1] - first[1]).unwrap_or(1.0) > 0.0;
         self.put_limb_cell(cur, r, up);
         let mut along = 1;
@@ -335,6 +474,41 @@ impl Plan {
                 }
             }
         }
+    }
+
+    /// Joins cell `from` to cell `to` on the same level with `piece`, one face at a time.
+    pub fn join(&mut self, from: [i32; 3], to: [i32; 3], piece: Piece) {
+        let mut cur = from;
+        for axis in [0, 2] {
+            while cur[axis] != to[axis] {
+                let prev = cur;
+                cur[axis] += (to[axis] - cur[axis]).signum();
+                self.put(cur[0], cur[1], cur[2], piece);
+                self.link(prev, cur);
+            }
+        }
+    }
+
+    /// The cell nearest to `p`, within `reach` cells of it, whose piece passes `test`.
+    fn nearest(&self, p: V3, reach: i32, test: impl Fn(Piece) -> bool) -> Option<[i32; 3]> {
+        let c = cell_of(p);
+        let mut best: Option<([i32; 3], f32)> = None;
+        for dy in -reach..=reach {
+            for dz in -reach..=reach {
+                for dx in -reach..=reach {
+                    let q = [c[0] + dx, c[1] + dy, c[2] + dz];
+                    if !test(self.piece(q[0], q[1], q[2])) {
+                        continue;
+                    }
+                    let centre = [q[0] as f32 + 0.5, q[1] as f32 + 0.5, q[2] as f32 + 0.5];
+                    let d = length(sub(centre, p));
+                    if best.is_none_or(|(_, b)| d < b) {
+                        best = Some((q, d));
+                    }
+                }
+            }
+        }
+        best.map(|(q, _)| q)
     }
 
     fn put_limb_cell(&mut self, c: [i32; 3], r: f32, vertical: bool) {
@@ -377,6 +551,25 @@ impl Plan {
             }
             self.put(x, y - k, z, Piece::Leaves(leaf));
         }
+    }
+}
+
+/// The piece for a cell a limb runs through sideways, which must reach its neighbour across
+/// the face: a pillar, quarter or slab can't, so it becomes a branch as thick (arms reach the
+/// face), or bark where a branch would be thinner or set back from the rest of the trunk.
+fn jointed(piece: Piece) -> Piece {
+    let (w, centred) = match piece {
+        Piece::Pillar(l) => (PILLAR_PX[l as usize - 1], true),
+        Piece::Quarter(l, _) => (QUARTER_PX[l as usize - 1], false),
+        Piece::Slab(l, _) => (SLAB_PX[l as usize - 1], false),
+        _ => return piece,
+    };
+    match w {
+        12.. => Piece::Wood,
+        8.. if !centred => Piece::Wood,
+        8.. => Piece::Branch(Thick::Large),
+        6.. => Piece::Branch(Thick::Medium),
+        _ => Piece::Branch(Thick::Small),
     }
 }
 
@@ -500,6 +693,36 @@ fn candidates() -> &'static [(Piece, Mask)] {
     })
 }
 
+/// The pixels a piece covers seen from above (a branch by its post).
+fn footprint(piece: Piece) -> Option<Mask> {
+    match piece {
+        Piece::Empty | Piece::Leaves(_) => None,
+        Piece::Log | Piece::Wood => Some([u64::MAX; 4]),
+        Piece::Branch(t) => {
+            let (a, b) = (8 - t.width() as i32 / 2, 8 + t.width() as i32 / 2);
+            Some(mask_from(|px, pz| {
+                (a..b).contains(&px) && (a..b).contains(&pz)
+            }))
+        }
+        p => candidates().iter().find(|c| c.0 == p).map(|c| c.1),
+    }
+}
+
+/// Whether footprint `a` meets footprint `b` of the next cell across `a`'s side `side` (see
+/// [`SIDES`]) along an edge.
+fn meets(a: &Mask, b: &Mask, side: usize) -> bool {
+    let bit = |m: &Mask, px: i32, pz: i32| {
+        let n = pz * 16 + px;
+        m[(n / 64) as usize] >> (n % 64) & 1 == 1
+    };
+    (0..16).any(|t| match side {
+        0 => bit(a, t, 0) && bit(b, t, 15),
+        1 => bit(a, 15, t) && bit(b, 0, t),
+        2 => bit(a, t, 15) && bit(b, t, 0),
+        _ => bit(a, 0, t) && bit(b, 15, t),
+    })
+}
+
 fn count(m: &Mask) -> u32 {
     m.iter().map(|w| w.count_ones()).sum()
 }
@@ -574,9 +797,14 @@ mod tests {
         assert_eq!(p.piece(1, 0, 0), Piece::Wood);
         p.put(1, 0, 0, Piece::Leaves(0));
         assert_eq!(p.piece(1, 0, 0), Piece::Wood);
-        // A twig through the thin top of a trunk leaves it as it is.
+        // A twig through the thin top of a trunk becomes a branch there, so its arms reach
+        // the next cell instead of stopping short of a quarter set in a corner; through a
+        // pillar it takes the pillar's width.
         p.put(2, 0, 0, Piece::Quarter(2, 1));
         p.put(2, 0, 0, Piece::Branch(Thick::Small));
-        assert_eq!(p.piece(2, 0, 0), Piece::Quarter(2, 1));
+        assert_eq!(p.piece(2, 0, 0), Piece::Branch(Thick::Small));
+        p.put(3, 0, 0, Piece::Pillar(2));
+        p.put(3, 0, 0, Piece::Branch(Thick::Small));
+        assert_eq!(p.piece(3, 0, 0), Piece::Branch(Thick::Large));
     }
 }

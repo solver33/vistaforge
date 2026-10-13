@@ -239,6 +239,8 @@ pub fn all() -> Vec<Preset> {
             |s| {
                 s.water = 0.7;
                 s.relief = 0.3;
+                // Water stands in pools and slow channels; no rivers cut through.
+                s.rivers = 0.0;
             },
         ),
         preset(
@@ -250,6 +252,7 @@ pub fn all() -> Vec<Preset> {
                 s.water = 0.75;
                 s.relief = 0.25;
                 s.trees = 0.15;
+                s.rivers = 0.0;
             },
         ),
         preset(

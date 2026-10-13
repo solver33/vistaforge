@@ -26,6 +26,36 @@ pub struct WorldSettings {
     pub sea_level: i32,
     /// Hand-placed landforms, applied on top of the generated terrain.
     pub edits: Vec<ShapeEdit>,
+    /// How far up the world goes.
+    pub world_height: WorldHeight,
+}
+
+/// How far up the world goes. The bottom is always Y −64, as in vanilla.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldHeight {
+    /// Vanilla: up to Y 319.
+    #[default]
+    Standard,
+    /// Up to Y 2031, the most Minecraft 1.20.1 allows. The export adds a data pack to the world
+    /// that raises the overworld's limit, so no mod is needed; the game warns about
+    /// "experimental settings" when the world is opened.
+    Tall,
+}
+
+impl WorldHeight {
+    /// The highest Y a block can be at.
+    pub fn max_y(self) -> i32 {
+        match self {
+            Self::Standard => 319,
+            Self::Tall => 2031,
+        }
+    }
+
+    /// Blocks from the bottom (Y −64) to the top, both included.
+    pub fn height(self) -> i32 {
+        self.max_y() + 65
+    }
 }
 
 impl Default for WorldSettings {
@@ -42,6 +72,7 @@ impl Default for WorldSettings {
             sliders: Sliders::default(),
             sea_level: 63,
             edits: Vec::new(),
+            world_height: WorldHeight::Standard,
         }
     }
 }
@@ -209,6 +240,7 @@ impl Preset {
             sliders: self.sliders,
             sea_level: self.sea_level,
             edits: Vec::new(),
+            world_height: WorldHeight::Standard,
         }
     }
 }
@@ -232,7 +264,21 @@ mod tests {
         let partial: WorldSettings = serde_json::from_str(r#"{"size": 512}"#).unwrap();
         assert_eq!(partial.size, 512);
         assert_eq!(partial.sliders, Sliders::default());
+        assert_eq!(partial.world_height, WorldHeight::Standard);
         assert!(partial.validate().is_ok());
+        let tall: WorldSettings = serde_json::from_str(r#"{"world_height": "tall"}"#).unwrap();
+        assert_eq!(tall.world_height, WorldHeight::Tall);
+    }
+
+    #[test]
+    fn world_heights_fit_minecraft() {
+        for h in [WorldHeight::Standard, WorldHeight::Tall] {
+            // Dimension types need a height that is a multiple of 16, ending at Y 2031 at most.
+            assert_eq!(h.height() % 16, 0);
+            assert!(h.max_y() <= 2031);
+        }
+        assert_eq!(WorldHeight::Standard.height(), 384);
+        assert_eq!(WorldHeight::Tall.height(), 2096);
     }
 
     #[test]
