@@ -78,8 +78,8 @@ pub(super) struct Kit {
     /// `[layer - 1][corner][down][waterlogged]`
     quarter: [[[[BlockId; 2]; 2]; 4]; 5],
     quarter_stump: [[[[BlockId; 2]; 2]; 4]; 5],
-    /// `[layer - 1][side][waterlogged]`
-    slab: [[[BlockId; 2]; 4]; 4],
+    /// `[layer - 1][side][down][waterlogged]`; `down` is Conquest's `extension_toggle`.
+    slab: [[[[BlockId; 2]; 2]; 4]; 4],
     /// `[thickness][north | east << 1 | south << 2 | west << 3 | up << 4][waterlogged]`
     branch: [[[BlockId; 2]; 32]; 3],
 }
@@ -113,7 +113,7 @@ impl Kit {
             stump: [[[AIR; 2]; 2]; 5],
             quarter: [[[[AIR; 2]; 2]; 4]; 5],
             quarter_stump: [[[[AIR; 2]; 2]; 4]; 5],
-            slab: [[[AIR; 2]; 4]; 4],
+            slab: [[[[AIR; 2]; 2]; 4]; 4],
             branch: [[[AIR; 2]; 32]; 3],
         };
         for wl in 0..2 {
@@ -144,15 +144,17 @@ impl Kit {
             for l in 0..4 {
                 let layer = (l + 1).to_string();
                 for (s, facing) in SLAB_FACING.iter().enumerate() {
-                    kit.slab[l][s][wl] = b.id(
-                        &piece("vertical_slab"),
-                        &[
-                            ("layer", layer.as_str()),
-                            ("facing", facing),
-                            ("extension_toggle", "false"),
-                            ("waterlogged", water),
-                        ],
-                    )?;
+                    for down in 0..2 {
+                        kit.slab[l][s][down][wl] = b.id(
+                            &piece("vertical_slab"),
+                            &[
+                                ("layer", layer.as_str()),
+                                ("facing", facing),
+                                ("extension_toggle", flag(down == 1)),
+                                ("waterlogged", water),
+                            ],
+                        )?;
+                    }
                 }
             }
             for (t, kind) in ["large_branch", "branch", "small_branch"]
@@ -189,7 +191,7 @@ impl Kit {
             Piece::Pillar(l) => self.pillar[l as usize - 1][d][w],
             Piece::Quarter(l, c) if stump => self.quarter_stump[l as usize - 1][c as usize][d][w],
             Piece::Quarter(l, c) => self.quarter[l as usize - 1][c as usize][d][w],
-            Piece::Slab(l, s) => self.slab[l as usize - 1][s as usize][w],
+            Piece::Slab(l, s) => self.slab[l as usize - 1][s as usize][d][w],
             Piece::Branch(t) => self.branch[t.index()][arms][w],
         }
     }
@@ -203,7 +205,7 @@ impl Kit {
         for t in [&self.quarter, &self.quarter_stump] {
             out.extend(t.iter().flatten().flatten().flatten());
         }
-        out.extend(self.slab.iter().flatten().flatten());
+        out.extend(self.slab.iter().flatten().flatten().flatten());
         out.extend(self.branch.iter().flatten().flatten());
         out
     }
