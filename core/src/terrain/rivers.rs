@@ -7,7 +7,7 @@
 
 use super::grid::smoothstep;
 use super::hydro::{Flood, Water, NONE};
-use super::noise::perlin1;
+use super::noise::{perlin, perlin1};
 
 /// A river course before smoothing, in block coordinates.
 #[derive(Clone, Debug, Default)]
@@ -47,6 +47,8 @@ pub struct Cut {
     pub bank: Option<i32>,
     /// Distance from the nearest water's edge (negative inside a channel).
     pub edge: f32,
+    /// Water surface of the nearest channel.
+    pub level: i32,
 }
 
 impl Cut {
@@ -65,6 +67,7 @@ impl Cut {
 }
 
 pub struct Rivers {
+    seed: u64,
     segs: Vec<Segment>,
     origin: f64,
     bucket: f64,
@@ -82,17 +85,48 @@ fn floodplain(w: f32) -> f32 {
 /// Ground height a river allows at distance `d` from its centre line. The channel is cut
 /// below the whole-block water surface `level`; the floodplain and valley sides follow the
 /// smooth `surface`, so they do not step down with the water.
+///
+/// `shape` is the local look of the river, from noise: `bank` 0..1 turns gentle point bars
+/// into steeper cut banks, and `bar` 0..1 raises the bed towards the edges into gravel bars.
 #[inline]
-fn profile(d: f32, w: f32, depth: f32, level: f32, surface: f32) -> f32 {
+fn profile(d: f32, w: f32, depth: f32, level: f32, surface: f32, shape: Shape) -> f32 {
     if d < w {
         let t = d / w;
-        level - 0.3 - (depth - 0.3).max(0.0) * (1.0 - t * t)
+        let bed = level - 0.3 - (depth - 0.3).max(0.0) * (1.0 - t * t);
+        bed + shape.bar * t * (depth + 0.6)
     } else {
         let e = d - w;
         let fp = floodplain(w);
         let wall = (e - fp).max(0.0);
         let steep = (e - fp - 8.0).max(0.0);
-        surface.max(level) + 0.15 + 0.25 * e.min(fp) + 0.9 * wall + 0.12 * steep * steep
+        let rise = 0.12 + 0.55 * shape.bank;
+        surface.max(level)
+            + 0.05
+            + 0.3 * shape.bank
+            + rise * e.min(fp)
+            + 0.9 * wall
+            + 0.12 * steep * steep
+    }
+}
+
+/// Local river look at a column (see [`profile`]).
+#[derive(Clone, Copy, Debug, Default)]
+struct Shape {
+    /// Width multiplier: pools and narrows along the river.
+    width: f32,
+    bank: f32,
+    bar: f32,
+}
+
+impl Shape {
+    fn at(seed: u64, x: f32, z: f32) -> Self {
+        let (x, z) = (x as f64, z as f64);
+        let n = |k: u64, s: f64| perlin(seed ^ k, x / s, z / s) as f32;
+        Self {
+            width: (1.0 + 0.5 * n(0x31, 37.0) + 0.2 * n(0x32, 11.0)).clamp(0.5, 1.7),
+            bank: (0.5 + 0.6 * n(0x33, 17.0)).clamp(0.0, 1.0),
+            bar: ((n(0x34, 11.0) - 0.25) * 1.4).clamp(0.0, 0.6),
+        }
     }
 }
 
@@ -224,7 +258,8 @@ impl Rivers {
         for t in &done {
             for i in 0..t.pts.len().saturating_sub(1) {
                 let (wa, wb) = (t.half[i] as f32, t.half[i + 1] as f32);
-                let w = wa.max(wb);
+                // Widest the channel gets where it pools.
+                let w = wa.max(wb) * 1.7;
                 segs.push(Segment {
                     a: (t.pts[i].0 as f32, t.pts[i].1 as f32),
                     b: (t.pts[i + 1].0 as f32, t.pts[i + 1].1 as f32),
@@ -263,6 +298,7 @@ impl Rivers {
             offsets.push(items.len() as u32);
         }
         Self {
+            seed,
             segs,
             origin,
             bucket,
@@ -290,6 +326,8 @@ impl Rivers {
         // Highest water surface whose bank the column is on.
         let mut bank: Option<i32> = None;
         let mut edge = f32::MAX;
+        let mut nearest = 0;
+        let mut shape: Option<Shape> = None;
         for &k in list {
             let s = &self.segs[k as usize];
             let (dx, dz) = (s.b.0 - s.a.0, s.b.1 - s.a.1);
@@ -304,12 +342,16 @@ impl Rivers {
             if d > s.reach {
                 continue;
             }
-            let w = s.wa + (s.wb - s.wa) * f;
+            let sh = *shape.get_or_insert_with(|| Shape::at(self.seed, px, pz));
+            let w = (s.wa + (s.wb - s.wa) * f) * sh.width;
             let smooth = s.sa + (s.sb - s.sa) * f;
             let surface = smooth.floor();
             let depth = s.da + (s.db - s.da) * f;
-            cut = cut.min(profile(d, w, depth, surface, smooth));
-            edge = edge.min(d - w);
+            cut = cut.min(profile(d, w, depth, surface, smooth, sh));
+            if d - w < edge {
+                edge = d - w;
+                nearest = surface as i32;
+            }
             if d < w {
                 let r = d / w;
                 if channel.is_none_or(|c| r < c.0) {
@@ -328,6 +370,7 @@ impl Rivers {
             channel: channel.map(|c| c.1),
             bank,
             edge,
+            level: nearest,
         })
     }
 }
