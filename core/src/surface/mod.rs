@@ -1,174 +1,474 @@
-//! Surface: the blocks of each column — bedrock, stone, soil, the top block or Conquest layer,
-//! and water — plus the Minecraft biome written for the column (grass, foliage and water
-//! colours) and its colour in the app's preview.
+//! Surface: the blocks of each column — bedrock, rock strata, soil, the top block and the thin
+//! Conquest layer that follows the terrain's fractional height, and water — plus the Minecraft
+//! biome written for the column (grass, foliage and water colours) and its colour in the app's
+//! preview.
 //!
-//! [`Surface::fill`] must depend only on the seed, the column position and the column grid, so
-//! overlapping pieces of the map agree.
+//! Each column falls into a zone (open ground, under trees, damp, stony slope, scree, bare rock,
+//! shore, or a water bed), and each biome mixes a few Conquest materials per zone in irregular
+//! patches (see `recipes`). Below the top come soil and then rock in wavy strata, so cliffs and
+//! banks show layered rock (see `geology`).
 //!
-//! The current implementation is the phase-0 meadow (grass and clover layers, sandy shores,
-//! a gravel and sand lake bed); it ignores most biomes until the real surface rules land.
+//! [`Surface::fill`] depends only on the seed, the column position and the columns within two
+//! blocks of it, so overlapping pieces of the map agree.
 
-use std::collections::HashMap;
+pub(crate) mod field;
+pub(crate) mod geology;
+pub(crate) mod materials;
+pub(crate) mod recipes;
 
 use anyhow::Result;
 
 use crate::biome::Biome;
-use crate::column::{ColumnGrid, ColumnInfo};
-use crate::noise::fbm2;
+use crate::column::{ColumnGrid, ColumnInfo, WaterKind};
+use crate::noise::{hash64, value2};
 use crate::settings::WorldSettings;
-use crate::sink::{BlockId, BlockSink, Blocks};
+use crate::sink::{BlockId, BlockSink, Blocks, AIR};
 use crate::world::MIN_Y;
+
+use field::{dither, hash_unit, local_biome, patch, pick, smoothstep, woodland};
+use geology::{Geology, Strata};
+use materials::{Kind, Kit, Mat};
+use recipes::{recipe, Mix};
+
+/// Stands in a mix for the local geology's loose rock.
+const DEBRIS: Mat = Mat(u16::MAX);
+
+struct RMix {
+    base: Vec<(Mat, u32)>,
+    scale: f64,
+    accent: Vec<(Mat, u32)>,
+    accent_scale: f64,
+    accent_share: f32,
+}
+
+struct RRecipe {
+    open: RMix,
+    wood: RMix,
+    wet: RMix,
+    stony: RMix,
+    scree: RMix,
+    shore: RMix,
+    beds: [RMix; 3],
+    topsoil: Mat,
+    subsoil: Mat,
+    soil_depth: f32,
+    stony_slope: f32,
+    scree_slope: f32,
+    rock_slope: (f32, f32),
+    snow: bool,
+    mossy_rock: bool,
+}
+
+/// Where a column is, for choosing its ground (and, in `decor`, what grows there).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Zone {
+    Open,
+    Wood,
+    Wet,
+    Stony,
+    Scree,
+    Rock,
+    Shore,
+    /// Under water: 0 shallow, 1 medium, 2 deep.
+    Bed(u8),
+}
+
+/// What a column's top is made of.
+#[derive(Clone, Copy)]
+pub(crate) struct Top {
+    pub zone: Zone,
+    pub biome: Biome,
+    pub mat: Mat,
+    pub strata: Strata,
+}
+
+/// The nearest water to a dry column, within two blocks.
+#[derive(Clone, Copy)]
+struct Near {
+    level: i32,
+}
 
 pub struct Surface {
     seed: u64,
+    pub(crate) kit: Kit,
+    pub(crate) geology: Geology,
+    recipes: Vec<RRecipe>,
+    river_beds: [RMix; 3],
+    swamp_beds: [RMix; 3],
+    snow: Mat,
     bedrock: BlockId,
-    stone: BlockId,
-    dirt: BlockId,
-    grass: BlockId,
-    sand: BlockId,
-    gravel: BlockId,
+    deep: BlockId,
     water: BlockId,
-    /// Layers 1..=7 (index 0 is layers=1).
-    grass_layers: [BlockId; 7],
-    clover_layers: [BlockId; 7],
-    sand_layers: [BlockId; 7],
-    gravel_layers_wet: [BlockId; 7],
-    sand_layers_wet: [BlockId; 7],
-    /// Average top colour of every block this module places, for previews.
-    colors: HashMap<BlockId, [u8; 3]>,
-}
-
-fn layers(b: &Blocks, id: &str, waterlogged: bool) -> Result<[BlockId; 7]> {
-    let wl = if waterlogged { "true" } else { "false" };
-    let mut out = [0; 7];
-    for (i, slot) in out.iter_mut().enumerate() {
-        *slot = b.id(id, &[("layers", &(i + 1).to_string()), ("waterlogged", wl)])?;
-    }
-    Ok(out)
+    /// Scales the share of accent patches (the "detail" slider).
+    accent: f32,
 }
 
 impl Surface {
     pub fn new(b: &Blocks, settings: &WorldSettings) -> Result<Self> {
-        let mut s = Self {
-            seed: settings.seed,
-            bedrock: b.default_id("minecraft:bedrock")?,
-            stone: b.default_id("minecraft:stone")?,
-            dirt: b.default_id("minecraft:dirt")?,
-            grass: b.id("minecraft:grass_block", &[("snowy", "false")])?,
-            sand: b.default_id("minecraft:sand")?,
-            gravel: b.default_id("minecraft:gravel")?,
-            water: b.id("minecraft:water", &[("level", "0")])?,
-            grass_layers: layers(b, "conquest:grass_block_layer", false)?,
-            clover_layers: layers(b, "conquest:clover_covered_grass_layer", false)?,
-            sand_layers: layers(b, "conquest:sand_layer", false)?,
-            gravel_layers_wet: layers(b, "conquest:gravel_layer", true)?,
-            sand_layers_wet: layers(b, "conquest:wet_sand_layer", true)?,
-            colors: HashMap::new(),
-        };
-        let mut ids = vec![
-            s.bedrock, s.stone, s.dirt, s.grass, s.sand, s.gravel, s.water,
-        ];
-        for set in [
-            s.grass_layers,
-            s.clover_layers,
-            s.sand_layers,
-            s.gravel_layers_wet,
-            s.sand_layers_wet,
-        ] {
-            ids.extend(set);
-        }
-        for id in ids {
-            let rgb = b
-                .palette
-                .with(id, |st| b.catalog.block(&st.name).and_then(|i| i.top_rgb))
-                .unwrap_or(0x7f7f7f);
-            s.colors
-                .insert(id, [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8]);
-        }
-        Ok(s)
-    }
-
-    /// The Minecraft biome written for this column.
-    pub fn minecraft_biome(&self, col: &ColumnInfo) -> &'static str {
-        match col.biome {
-            Biome::Plains | Biome::Beach | Biome::Lake => "minecraft:plains",
-            Biome::Meadow => "minecraft:meadow",
-            Biome::Forest => "minecraft:forest",
-            Biome::BirchForest => "minecraft:birch_forest",
-            Biome::Taiga => "minecraft:taiga",
-            Biome::PineForest => "minecraft:old_growth_pine_taiga",
-            Biome::Swamp | Biome::Marsh => "minecraft:swamp",
-            Biome::Highlands => "minecraft:windswept_hills",
-            Biome::Mountains => "minecraft:stony_peaks",
-            Biome::AlpineMeadow => "minecraft:meadow",
-            Biome::SnowyPeaks => "minecraft:snowy_slopes",
-            Biome::River => "minecraft:river",
-        }
-    }
-
-    /// The top full block and the layer block above it (if any) for a column.
-    fn top(&self, x: i32, z: i32, col: &ColumnInfo) -> (BlockId, Option<BlockId>) {
-        let (_, layers) = col.ground();
-        let water = col.water_level;
-        let shallow = water.is_some_and(|w| col.height > w as f32 - 1.5);
-        let sandy = col.biome == Biome::Beach || shallow;
-        let clover = fbm2(self.seed ^ 0xC10, x as f64 / 24.0, z as f64 / 24.0, 2) > 0.25;
-        let full = if water.is_some() && !shallow {
-            self.gravel
-        } else if sandy {
-            self.sand
-        } else if layers == 0 {
-            self.grass
-        } else {
-            self.dirt
-        };
-        let layer = (layers > 0).then(|| {
-            let l = layers as usize - 1;
-            if shallow {
-                self.sand_layers_wet[l]
-            } else if water.is_some() {
-                self.gravel_layers_wet[l]
-            } else if sandy {
-                self.sand_layers[l]
-            } else if clover {
-                self.clover_layers[l]
-            } else {
-                self.grass_layers[l]
+        let kit = Kit::new(b)?;
+        let geology = Geology::new(settings.seed, &kit);
+        let rmix = |m: &Mix| {
+            let res = |list: &[(&str, u32)]| {
+                list.iter()
+                    .map(|&(k, w)| (if k == "@debris" { DEBRIS } else { kit.get(k) }, w))
+                    .collect::<Vec<_>>()
+            };
+            RMix {
+                base: res(m.base),
+                scale: m.scale,
+                accent: res(m.accent),
+                accent_scale: m.accent_scale,
+                accent_share: m.accent_share,
             }
-        });
-        (full, layer)
+        };
+        let beds = |b: &[Mix; 3]| [rmix(&b[0]), rmix(&b[1]), rmix(&b[2])];
+        let recipes = Biome::ALL
+            .iter()
+            .map(|&biome| {
+                let r = recipe(biome);
+                RRecipe {
+                    open: rmix(&r.open),
+                    wood: rmix(&r.wood),
+                    wet: rmix(&r.wet),
+                    stony: rmix(&r.stony),
+                    scree: rmix(&r.scree),
+                    shore: rmix(&r.shore),
+                    beds: beds(&r.beds),
+                    topsoil: kit.get(r.topsoil),
+                    subsoil: kit.get(r.subsoil),
+                    soil_depth: r.soil_depth,
+                    stony_slope: r.stony_slope,
+                    scree_slope: r.scree_slope,
+                    rock_slope: r.rock_slope,
+                    snow: r.snow,
+                    mossy_rock: r.mossy_rock,
+                }
+            })
+            .collect();
+        Ok(Self {
+            seed: settings.seed,
+            river_beds: beds(recipes::river_beds()),
+            swamp_beds: beds(recipes::swamp_beds()),
+            recipes,
+            geology,
+            snow: kit.get("snow"),
+            bedrock: b.default_id("minecraft:bedrock")?,
+            deep: b.default_id("minecraft:stone")?,
+            water: b.id("minecraft:water", &[("level", "0")])?,
+            accent: (settings.sliders.detail.clamp(0.0, 1.0) * 2.0).max(0.0),
+            kit,
+        })
+    }
+
+    fn recipe(&self, biome: Biome) -> &RRecipe {
+        &self.recipes[biome as usize]
+    }
+
+    /// Which zone a column is in. `near` is the closest water, when it is known.
+    fn zone(&self, x: i32, z: i32, col: &ColumnInfo, biome: Biome, near: Option<Near>) -> Zone {
+        let s = self.seed;
+        if col.water_level.is_some() {
+            let d = col.depth() + dither(s, 11, x, z, 0.5);
+            return Zone::Bed(if d < 1.2 {
+                0
+            } else if d < 3.5 {
+                1
+            } else {
+                2
+            });
+        }
+        let r = self.recipe(biome);
+        let slope = col.slope;
+        let rock = col
+            .rock
+            .max(smoothstep(r.rock_slope.0, r.rock_slope.1, slope));
+        if rock + dither(s, 12, x, z, 0.3) > 0.5 {
+            return Zone::Rock;
+        }
+        if slope + dither(s, 13, x, z, 0.25) > r.scree_slope
+            || col.flow + dither(s, 14, x, z, 0.15) > 0.65
+        {
+            return Zone::Scree;
+        }
+        if let Some(n) = near {
+            if col.height < n.level as f32 + 2.2 + dither(s, 15, x, z, 0.6) {
+                return Zone::Shore;
+            }
+        }
+        if slope + dither(s, 16, x, z, 0.25) > r.stony_slope
+            || col.flow + dither(s, 17, x, z, 0.15) > 0.4
+        {
+            return Zone::Stony;
+        }
+        if col.moisture + dither(s, 18, x, z, 0.12) > 0.74 {
+            return Zone::Wet;
+        }
+        if woodland(s, x, z, biome) + dither(s, 19, x, z, 0.25) > 0.5 {
+            return Zone::Wood;
+        }
+        Zone::Open
+    }
+
+    fn choose(&self, mix: &RMix, salt: u64, x: i32, z: i32, suite: usize) -> Mat {
+        let s = self.seed ^ salt.wrapping_mul(0x9E37_79B9);
+        let accent = (!mix.accent.is_empty())
+            .then(|| patch(s, 1, x, z, mix.accent_scale))
+            .filter(|&h| hash_unit(h) < mix.accent_share * self.accent);
+        let m = match accent {
+            Some(h) => pick(&mix.accent, hash_unit(hash64(h))),
+            None => pick(&mix.base, hash_unit(patch(s, 2, x, z, mix.scale))),
+        };
+        if m == DEBRIS {
+            self.geology.debris(suite)
+        } else {
+            m
+        }
+    }
+
+    fn top(&self, x: i32, z: i32, col: &ColumnInfo, near: Option<Near>) -> Top {
+        let biome = local_biome(self.seed, x, z, col);
+        let zone = self.zone(x, z, col, biome, near);
+        let strata = self.geology.strata(x, z);
+        let r = self.recipe(biome);
+        let mat = match zone {
+            Zone::Open => self.choose(&r.open, 1, x, z, strata.suite),
+            Zone::Wood => self.choose(&r.wood, 2, x, z, strata.suite),
+            Zone::Wet => self.choose(&r.wet, 3, x, z, strata.suite),
+            Zone::Stony => self.choose(&r.stony, 4, x, z, strata.suite),
+            Zone::Scree => self.choose(&r.scree, 5, x, z, strata.suite),
+            Zone::Shore => self.choose(&r.shore, 6, x, z, strata.suite),
+            Zone::Bed(d) => {
+                let beds = match col.water {
+                    WaterKind::River if biome != Biome::River => &self.river_beds,
+                    WaterKind::Swamp if !matches!(biome, Biome::Swamp | Biome::Marsh) => {
+                        &self.swamp_beds
+                    }
+                    _ => &r.beds,
+                };
+                self.choose(&beds[d as usize], 7 + d as u64, x, z, strata.suite)
+            }
+            Zone::Rock => {
+                let (y, _) = col.ground();
+                let rock = self.geology.rock(&strata, y - 1);
+                let damp = col.moisture + dither(self.seed, 20, x, z, 0.3) > 0.5;
+                match self.geology.mossy(&strata, rock) {
+                    Some(m) if r.mossy_rock && damp => m,
+                    _ => rock,
+                }
+            }
+        };
+        Top {
+            zone,
+            biome,
+            mat,
+            strata,
+        }
+    }
+
+    /// The biome a column shows and its zone, without looking at its neighbours (so shores
+    /// aren't told apart from the land behind them) and without working out the material.
+    pub(crate) fn biome_zone(&self, x: i32, z: i32, col: &ColumnInfo) -> (Biome, Zone) {
+        let biome = local_biome(self.seed, x, z, col);
+        (biome, self.zone(x, z, col, biome, None))
+    }
+
+    /// What a column's top is made of, exactly as [`Surface::fill`] decides it. `None` when the
+    /// column isn't in the grid.
+    pub(crate) fn top_at(&self, x: i32, z: i32, grid: &ColumnGrid) -> Option<Top> {
+        let col = grid.try_get(x, z)?;
+        let near = if col.is_wet() {
+            None
+        } else {
+            Self::near_water(x, z, grid)
+        };
+        Some(self.top(x, z, col, near))
+    }
+
+    /// The nearest water within two blocks of a dry column.
+    fn near_water(x: i32, z: i32, grid: &ColumnGrid) -> Option<Near> {
+        let mut best: Option<(i32, i32)> = None;
+        for dx in -2i32..=2 {
+            for dz in -2i32..=2 {
+                let Some(c) = grid.try_get(x + dx, z + dz) else {
+                    continue;
+                };
+                if let Some(level) = c.water_level {
+                    let d = dx * dx + dz * dz;
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, level));
+                    }
+                }
+            }
+        }
+        best.map(|(_, level)| Near { level })
+    }
+
+    /// The lowest ground among the eight neighbours: rock is visible down to there.
+    fn lowest_neighbour(x: i32, z: i32, own: i32, grid: &ColumnGrid) -> i32 {
+        let mut low = own;
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                if let Some(c) = grid.try_get(x + dx, z + dz) {
+                    let (y, _) = c.ground();
+                    // Under water the bed is hidden anyway.
+                    low = low.min(y);
+                }
+            }
+        }
+        low
     }
 
     pub fn fill(&self, x: i32, z: i32, grid: &ColumnGrid, sink: &mut dyn BlockSink) {
         let col = grid.get(x, z);
-        let (y, _) = col.ground();
-        let (top, layer) = self.top(x, z, col);
-        let soil = if top == self.grass { self.dirt } else { top };
-        sink.set(x, MIN_Y, z, self.bedrock);
-        sink.fill_column(x, z, MIN_Y + 1, y - 4, self.stone);
-        sink.fill_column(x, z, y - 4, y - 1, soil);
-        sink.set(x, y - 1, z, top);
+        let Some(top) = self.top_at(x, z, grid) else {
+            return;
+        };
+        let r = self.recipe(top.biome);
+        let (y, layers) = col.ground();
+        let wet = col.is_wet();
+        let m = self.kit.mat(top.mat);
+
+        // The thin top layer, if any.
         let mut surface = y;
-        if let Some(layer) = layer {
-            sink.set(x, y, z, layer);
-            surface += 1;
+        if layers > 0 {
+            let l = layers as usize - 1;
+            let thin = if top.zone == Zone::Rock {
+                let rock = self.kit.mat(self.geology.rock(&top.strata, y));
+                if r.snow && col.slope < 1.4 {
+                    self.kit.mat(self.snow).thin[l]
+                } else {
+                    rock.thin[l]
+                }
+            } else if wet {
+                m.thin_wet[l]
+            } else {
+                m.thin[l]
+            };
+            if thin != AIR {
+                sink.set(x, y, z, thin);
+                surface = y + 1;
+            }
         }
+
+        // The top full block, then soil.
+        let organic = m.kind.organic();
+        let topsoil = self.kit.mat(r.topsoil).full;
+        let subsoil = self.kit.mat(r.subsoil).full;
+        let full = if layers > 0 && organic {
+            topsoil
+        } else {
+            m.full
+        };
+        sink.set(x, y - 1, z, full);
+        let depth = match m.kind {
+            Kind::Rock => 0,
+            _ => {
+                let flat = 1.0 - smoothstep(0.3, 1.4, col.slope);
+                let n = value2(self.seed ^ 0x501, x as f64 / 11.0, z as f64 / 11.0) as f32;
+                ((r.soil_depth * flat * (1.0 + 0.35 * n)).round() as i32).max(1)
+            }
+        };
+        for k in 1..depth {
+            let id = match m.kind {
+                Kind::Sand | Kind::Gravel | Kind::Mud | Kind::Ice if k < 3 => m.full,
+                _ if k == 1 && organic && layers == 0 => topsoil,
+                _ => subsoil,
+            };
+            sink.set(x, y - 1 - k, z, id);
+        }
+
+        // Rock: strata where a cliff or bank could show them, plain stone below.
+        let rock_top = y - 1 - depth;
+        let shown = (Self::lowest_neighbour(x, z, y, grid) - 3).min(rock_top);
+        let strata_from = shown.max(MIN_Y + 1);
+        sink.set(x, MIN_Y, z, self.bedrock);
+        sink.fill_column(x, z, MIN_Y + 1, strata_from, self.deep);
+        for ry in strata_from..=rock_top {
+            let rock = self.geology.rock(&top.strata, ry);
+            sink.set(x, ry, z, self.kit.mat(rock).full);
+        }
+
         if let Some(w) = col.water_level {
             sink.fill_column(x, z, surface, w + 1, self.water);
         }
     }
 
-    pub fn preview_color(&self, x: i32, z: i32, col: &ColumnInfo) -> [u8; 3] {
-        let (top, layer) = self.top(x, z, col);
-        let c = self.colors[&layer.unwrap_or(top)];
+    /// The Minecraft biome written for a column. Water gets ocean biomes, whose water colours
+    /// are much lighter than plains or swamp water: Conquest's water texture is dark, and under
+    /// the plains colour lakes look nearly black.
+    pub fn minecraft_biome(&self, col: &ColumnInfo) -> &'static str {
         if col.is_wet() {
-            // Plains water colour over the bed, darker with depth.
-            let t = (0.45 + col.depth() * 0.08).min(0.85);
-            let w = [63.0, 118.0, 228.0];
-            let mix = |i: usize| (c[i] as f32 * (1.0 - t) + w[i] * t) as u8;
-            [mix(0), mix(1), mix(2)]
-        } else {
-            c
+            return water_biome(col).0;
+        }
+        land_biome(col.biome).0
+    }
+
+    /// The Minecraft biome for the 4×4×4 biome cell of a column whose lowest block is at `y`.
+    /// Biomes are three-dimensional, so only the cells holding water need the water biome:
+    /// above them the land biome keeps the grass and foliage colours of trees and reeds that
+    /// stand in the water, which the ocean biomes would turn a brighter green.
+    pub fn minecraft_biome_at(&self, col: &ColumnInfo, y: i32) -> &'static str {
+        match col.water_level {
+            Some(w) if y <= w => water_biome(col).0,
+            _ => land_biome(col.biome).0,
         }
     }
+
+    pub fn preview_color(&self, x: i32, z: i32, col: &ColumnInfo) -> [u8; 3] {
+        let top = self.top(x, z, col, None);
+        let m = self.kit.mat(top.mat);
+        let mut c = m.color.map(|v| v as f32);
+        if m.tinted {
+            let g = land_biome(top.biome).1;
+            for i in 0..3 {
+                c[i] = c[i] * g[i] as f32 / 255.0 * 1.25;
+            }
+        }
+        if col.is_wet() {
+            // Conquest's grey water texture under the biome's water colour, over the bed,
+            // which gets darker with depth.
+            let tint = water_biome(col).1;
+            let tex = [110.0, 120.0, 125.0];
+            let t = (0.5 + col.depth() * 0.06).min(0.85);
+            for i in 0..3 {
+                let water = tex[i] * tint[i] as f32 / 255.0 * 1.6;
+                c[i] = c[i] * (1.0 - t) * (1.0 - 0.04 * col.depth()).max(0.6) + water * t;
+            }
+        }
+        c.map(|v| v.clamp(0.0, 255.0) as u8)
+    }
 }
+
+/// The Minecraft biome for land of a biome, and its grass colour.
+fn land_biome(b: Biome) -> (&'static str, [u8; 3]) {
+    match b {
+        Biome::Plains | Biome::Lake => ("minecraft:plains", [0x91, 0xBD, 0x59]),
+        Biome::Meadow | Biome::AlpineMeadow => ("minecraft:meadow", [0x83, 0xBB, 0x6D]),
+        Biome::Forest => ("minecraft:forest", [0x79, 0xC0, 0x5A]),
+        Biome::BirchForest => ("minecraft:birch_forest", [0x88, 0xBB, 0x67]),
+        Biome::Taiga => ("minecraft:taiga", [0x86, 0xB7, 0x83]),
+        Biome::PineForest => ("minecraft:old_growth_pine_taiga", [0x86, 0xB8, 0x7F]),
+        Biome::Swamp | Biome::Marsh => ("minecraft:swamp", [0x6A, 0x70, 0x39]),
+        Biome::Highlands => ("minecraft:windswept_hills", [0x8A, 0xB6, 0x89]),
+        Biome::Mountains => ("minecraft:windswept_gravelly_hills", [0x8A, 0xB6, 0x89]),
+        Biome::SnowyPeaks => ("minecraft:snowy_slopes", [0x80, 0xB4, 0x97]),
+        Biome::Beach => ("minecraft:beach", [0x91, 0xBD, 0x59]),
+        Biome::River => ("minecraft:river", [0x8E, 0xB9, 0x71]),
+    }
+}
+
+/// The Minecraft biome for water, and its water colour: turquoise in the shallows, light blue
+/// further out. Swamp water too: the swamp's own murky colour is nearly black under Conquest's
+/// water texture; the mud and peat beds, reeds and duckweed make swamps look swampy instead.
+fn water_biome(col: &ColumnInfo) -> (&'static str, [u8; 3]) {
+    if col.biome == Biome::SnowyPeaks {
+        ("minecraft:snowy_slopes", [0x3D, 0x57, 0xD6])
+    } else if col.depth() < 3.0 {
+        ("minecraft:warm_ocean", [0x43, 0xD5, 0xEE])
+    } else {
+        ("minecraft:lukewarm_ocean", [0x45, 0xAD, 0xF2])
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests;
