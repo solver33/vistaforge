@@ -17,7 +17,10 @@
 //!   lichen carpets, plant communities in drifts of one species, reeds in the shallows and
 //!   lilies on still water. Each column looks only at its own cells in the sink, so it comes
 //!   out the same in every piece.
+//! - Waterfalls (`falls`): white water down the curtain, steam and mist over the pool at its
+//!   foot, and no reeds or lilies in the churning water.
 
+pub(crate) mod falls;
 pub(crate) mod flora;
 pub(crate) mod forest;
 pub(crate) mod objects;
@@ -37,6 +40,7 @@ use crate::surface::materials::Kind;
 use crate::surface::{Surface, Top, Zone};
 use crate::trees::TreeRequest;
 
+use falls::Falls;
 use flora::{Community, Flora, Form, PlantId};
 use forest::Forest;
 use objects::Objects;
@@ -140,6 +144,7 @@ pub struct Decor {
     surface: Surface,
     forest: Forest,
     objects: Objects,
+    falls: Falls,
     flora: Flora,
     water: BlockId,
     /// The vegetation slider as a density factor (1 at the default).
@@ -199,6 +204,7 @@ impl Decor {
             seed: settings.seed,
             forest: Forest::new(settings.seed, sl.trees),
             objects: Objects::new(b, settings.seed, sl.detail)?,
+            falls: Falls::new(b, settings.seed, sl.detail.clamp(0.0, 1.0) * 2.0)?,
             water: b.id("minecraft:water", &[("level", "0")])?,
             plants: sl.vegetation.clamp(0.0, 1.0) * 2.0,
             detail: sl.detail.clamp(0.0, 1.0) * 2.0,
@@ -272,6 +278,13 @@ impl Decor {
         let mut above = HashMap::new();
         for (x, z) in rect.columns() {
             self.cover(x, z, grid, sink, &mut above);
+        }
+
+        if grid.columns.iter().any(|c| c.fall.is_some()) {
+            for (x, z) in rect.columns() {
+                self.falls.foam(x, z, grid, sink);
+                self.falls.mist(x, z, grid, sink);
+            }
         }
     }
 
@@ -579,6 +592,11 @@ impl Decor {
             && unit(s, salt::RUBBLE, x, z) < 0.05 * self.detail
         {
             self.rubble(x, z, spot, top, grid, sink);
+            return;
+        }
+
+        // Nothing grows in the churning water under a waterfall.
+        if river && crate::surface::nearest_fall(x, z, grid, 2).is_some() {
             return;
         }
 

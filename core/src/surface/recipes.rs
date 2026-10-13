@@ -872,16 +872,47 @@ pub(crate) fn swamp_beds() -> &'static [Mix; 3] {
     &SWAMP.beds
 }
 
+/// The plunge pool under a waterfall: scoured down to dark, moss-grown stones and gravel.
+pub(crate) const FALL_BED: Mix = mixa(
+    &[("mossy_stones", 3), ("dark_gravel", 2), ("mossy_gravel", 1)],
+    3.0,
+    &[("pebbles", 1)],
+    3.0,
+    0.08,
+);
+
+/// Ground the spray keeps wet beside a waterfall: dark moss, mossy stones and silt, never a
+/// light band.
+pub(crate) const FALL_BANK: Mix = mixa(
+    &[
+        ("mossy_stones", 3),
+        ("green_sphagnum", 2),
+        ("mossy_silt", 2),
+        ("overgrown_stones", 1),
+    ],
+    3.0,
+    &[("mud", 1), ("cushion_moss", 1)],
+    3.0,
+    0.1,
+);
+
 /// Every material key the recipes use, for checking them.
 #[cfg(test)]
 pub(crate) fn all_keys() -> impl Iterator<Item = &'static str> {
-    Biome::ALL.iter().flat_map(|&b| {
-        let r = recipe(b);
-        [&r.open, &r.wood, &r.wet, &r.stony, &r.scree, &r.shore]
-            .into_iter()
-            .chain(r.beds.iter())
-            .flat_map(|m| m.base.iter().chain(m.accent.iter()).map(|e| e.0))
-            .chain([r.topsoil, r.subsoil])
-            .collect::<Vec<_>>()
-    })
+    Biome::ALL
+        .iter()
+        .flat_map(|&b| {
+            let r = recipe(b);
+            [&r.open, &r.wood, &r.wet, &r.stony, &r.scree, &r.shore]
+                .into_iter()
+                .chain(r.beds.iter())
+                .flat_map(|m| m.base.iter().chain(m.accent.iter()).map(|e| e.0))
+                .chain([r.topsoil, r.subsoil])
+                .collect::<Vec<_>>()
+        })
+        .chain(
+            [&FALL_BED, &FALL_BANK]
+                .into_iter()
+                .flat_map(|m| m.base.iter().chain(m.accent.iter()).map(|e| e.0)),
+        )
 }
