@@ -31,7 +31,7 @@ The engine cuts the map into 64×64 units. For each unit it does the following, 
 2. `Surface::fill(x, z, grid, sink)` writes each column: bedrock, stone, soil, the top block or layer, and water.
 3. `Decor::plan_trees(rect, column)` returns `TreeRequest`s, and `Trees::build(req, sink)` writes each tree.
 4. `Decor::decorate(rect, grid, sink)` adds plants, rocks, logs and ground detail into what is still air.
-5. Only the unit's own chunks are written to their region file. `Surface::minecraft_biome` sets each 4×4 biome cell.
+5. Only the unit's own chunks are written to their region file. `Surface::minecraft_biome_at(column, y)` sets each 4×4×4 biome cell, so water cells and the land above them can differ.
 
 Because every unit is generated with a margin and then clipped, **every module must be deterministic per position**. A decision may depend only on the seed, the coordinates and the column data. Hash the coordinates (`noise::hash2`, `unit2`), and never draw from a random sequence shared across the map. Trees may reach at most `trees::MAX_REACH` blocks from their trunk, and other decor at most `decor::MAX_REACH` blocks from their column. `engine::MARGIN` must cover both. The test `engine::tests::pieces_agree_across_borders` checks this.
 
@@ -66,7 +66,7 @@ vistaforge testworld --catalog <catalog.json> --out <saves folder>     # 256×25
 
 - The owner plays the CR 1.7.0 modpack (Fabric 1.20.1). The catalog from that install is in the project files as `catalog-cr-1.7.0.json` and contains 19,168 blocks.
 - Chunks are written with status `minecraft:full`, `isLightOn = 0` and no heightmaps. The game lights them and primes the heightmaps on load, which has been checked in game.
-- CR's water texture is darker than vanilla's. Tinted by plains water colour, lakes look very dark navy. Choose Minecraft biomes with lighter water colours for water areas.
+- CR's water texture is darker than vanilla's. Tinted by plains water colour, lakes look very dark navy, so the biome cells holding water use ocean biomes with lighter water colours. Cells above the water keep the land biome, because ocean biomes would tint the leaves of trees standing in water.
 - CR layer blocks have `layers` 1–8. Plants (`PlantsDense`) take the `layers` value of the layer they stand on (8 on a full block).
 - CR branches connect only to the branch family. `up` is set when the block below is sturdy or a branch. A post on a log pillar is forced to `up=true`, which is a deliberate deviation.
 
