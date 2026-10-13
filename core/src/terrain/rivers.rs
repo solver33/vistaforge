@@ -1,11 +1,13 @@
 //! Rivers: traced down the macro drainage network, smoothed and given meanders, then cut
 //! into the ground column by column with a channel, a floodplain and valley sides.
 //!
-//! Each river's water surface only ever goes down from source to mouth. Water blocks fill
-//! whole cells, so the surface drops in 1-block steps (small rapids) where it crosses a
+//! Each river's water surface only ever goes down from source to mouth, and stays just below
+//! the ground across its channel and banks, so a river never runs on a raised bank down a
+//! slope: where the ground beside it falls away, the river cuts down instead. Water blocks
+//! fill whole cells, so the surface drops in 1-block steps (small rapids) where it crosses a
 //! whole number. Banks next to the water are kept at least as high as the water surface.
 
-use super::grid::smoothstep;
+use super::grid::{par_map, smoothstep};
 use super::hydro::{Flood, Water, NONE};
 use super::noise::{perlin, perlin1};
 
@@ -27,13 +29,32 @@ pub struct Trace {
 struct Segment {
     a: (f32, f32),
     b: (f32, f32),
+    /// Water surface at each end.
     sa: f32,
     sb: f32,
+    /// Level the banks follow: the water before it was stepped into pools and falls.
+    ba: f32,
+    bb: f32,
     wa: f32,
     wb: f32,
     da: f32,
     db: f32,
     reach: f32,
+    /// The water falls from `sa` to `sb` here, over a lip at `a`.
+    fall: bool,
+    /// Extra depth of the plunge pool below a fall.
+    plunge: f32,
+}
+
+/// The ground along a course, from [`fit`].
+#[derive(Clone, Copy, Debug)]
+struct Ground {
+    /// Highest the water may stand: just below the lowest ground across channel and banks.
+    low: f64,
+    /// Highest ground at the edge of the usual valley reach on either side.
+    high: f64,
+    /// Level the water should be raised to (wetland pools), if the banks allow it.
+    lift: f64,
 }
 
 /// What the rivers around a column do to it.
@@ -47,8 +68,11 @@ pub struct Cut {
     pub bank: Option<i32>,
     /// Distance from the nearest water's edge (negative inside a channel).
     pub edge: f32,
-    /// Water surface of the nearest channel.
-    pub level: i32,
+    /// Water surface above the lip of a waterfall the column's channel falls from.
+    pub fall: Option<i32>,
+    /// 0..1: how fully the valley applies; it fades out at the edge of its reach, so the
+    /// valley side never ends in a step.
+    pub strength: f32,
 }
 
 impl Cut {
@@ -59,6 +83,7 @@ impl Cut {
         let k = 2.5;
         let t = (k - (h - limit).abs()).max(0.0) / k;
         let v = h.min(limit) - t * t * k * 0.25;
+        let v = h + (v - h) * self.strength;
         match (self.channel, self.bank) {
             (None, Some(level)) => v.max(level as f32),
             _ => v,
@@ -87,13 +112,16 @@ fn floodplain(w: f32) -> f32 {
 /// smooth `surface`, so they do not step down with the water.
 ///
 /// `shape` is the local look of the river, from noise: `bank` 0..1 turns gentle point bars
-/// into steeper cut banks, and `bar` 0..1 raises the bed towards the edges into gravel bars.
+/// into steeper cut banks, and `bar` 0..1 raises the bed towards the edges into shallow gravel
+/// bars, which stay under the water.
 #[inline]
 fn profile(d: f32, w: f32, depth: f32, level: f32, surface: f32, shape: Shape) -> f32 {
     if d < w {
         let t = d / w;
         let bed = level - 0.3 - (depth - 0.3).max(0.0) * (1.0 - t * t);
-        bed + shape.bar * t * (depth + 0.6)
+        // Bars stay just under the water: a dry bar beside a step in the surface would let
+        // the higher water out.
+        (bed + shape.bar * t * (depth + 0.6)).min(level - 0.2)
     } else {
         let e = d - w;
         let fp = floodplain(w);
@@ -228,14 +256,100 @@ fn closest(t: &Trace, p: (f64, f64)) -> (usize, f64, f64) {
     best
 }
 
+/// Steps the water of a course into pools and waterfalls where it runs steeply: each pool
+/// is held at the level its tail end allows, so it sinks into the slope towards its head,
+/// where the pool above falls into it. Very steep ground falls in one drop. Returns the
+/// water levels and, per point, whether the water falls onto it from the point before.
+fn steps(pts: &[(f64, f64)], f: &[f64], seed: u64) -> (Vec<f64>, Vec<bool>) {
+    let m = f.len();
+    let mut s = vec![0.0; m];
+    for i in 1..m {
+        let (a, b) = (pts[i - 1], pts[i]);
+        s[i] = s[i - 1] + (b.0 - a.0).hypot(b.1 - a.1);
+    }
+    let mut out = f.to_vec();
+    let mut falls = vec![false; m];
+    let mut i = 1;
+    while i + 1 < m {
+        // Slope of the water over about ±6 blocks.
+        let (lo, hi) = (
+            (0..i).rev().find(|&k| s[i] - s[k] >= 6.0).unwrap_or(0),
+            (i..m).find(|&k| s[k] - s[i] >= 6.0).unwrap_or(m - 1),
+        );
+        let slope = (f[lo] - f[hi]) / (s[hi] - s[lo]).max(1.0);
+        if slope < 0.08 {
+            i += 1;
+            continue;
+        }
+        let vary = 0.7 + 0.6 * (0.5 + 0.5 * perlin1(seed, s[i] / 40.0));
+        let h = ((2.0 + 6.0 * slope.min(1.0)) * vary).max(2.0);
+        let mut j = i;
+        while j + 1 < m && f[i] - f[j] < h {
+            j += 1;
+        }
+        if f[i] - f[j] < h {
+            break;
+        }
+        while j + 1 < m && f[j] - f[j + 1] > 1.5 * (s[j + 1] - s[j]) {
+            j += 1;
+        }
+        out[i..j].fill(f[j]);
+        falls[i] = out[i - 1].floor() - out[i].floor() >= 2.0;
+        i = j;
+    }
+    (out, falls)
+}
+
+/// The ground along a course: at each point, across the channel and its banks (at their
+/// widest) and at the edges of the usual valley reach.
+fn fit(
+    t: &Trace,
+    ground: &(dyn Fn(f64, f64) -> f64 + Sync),
+    lift: &(dyn Fn(f64, f64) -> f64 + Sync),
+) -> Vec<Ground> {
+    let m = t.pts.len();
+    (0..m)
+        .map(|i| {
+            let (p, q) = (t.pts[i.saturating_sub(1)], t.pts[(i + 1).min(m - 1)]);
+            let (tx, tz) = (q.0 - p.0, q.1 - p.1);
+            let len = tx.hypot(tz).max(1e-6);
+            let (nx, nz) = (-tz / len, tx / len);
+            let o = t.pts[i];
+            let at = |d: f64| ground(o.0 + nx * d, o.1 + nz * d);
+            let w = 1.7 * t.half[i];
+            let bank = w + 1.5;
+            let low = [0.0, 0.5 * w, -0.5 * w, bank, -bank]
+                .iter()
+                .map(|&d| at(d))
+                .fold(f64::MAX, f64::min);
+            let far = w + floodplain(w as f32) as f64 + 24.0;
+            Ground {
+                low: low - 0.25,
+                high: at(far).max(at(-far)),
+                lift: lift(o.0, o.1),
+            }
+        })
+        .collect()
+}
+
 impl Rivers {
-    /// Smooths and joins the traces, and indexes their segments for column lookups.
-    /// Traces must come before every trace that joins them.
-    pub fn build(traces: Vec<Trace>, seed: u64, size: i32) -> Self {
+    /// Smooths and joins the traces, fits their water to the `ground` (the land before any
+    /// water shapes it), and indexes their segments for column lookups. Traces must come
+    /// before every trace that joins them.
+    pub fn build(
+        traces: Vec<Trace>,
+        seed: u64,
+        size: i32,
+        ground: &(dyn Fn(f64, f64) -> f64 + Sync),
+        lift: &(dyn Fn(f64, f64) -> f64 + Sync),
+    ) -> Self {
+        // Smooth courses with meanders; ends that join a river move onto its course.
         let mut done: Vec<Trace> = Vec::with_capacity(traces.len());
+        let mut joins: Vec<Option<(usize, usize, f64)>> = Vec::with_capacity(traces.len());
         for (k, t) in traces.into_iter().enumerate() {
             let mut t = chaikin(&t, 3);
             meander(&mut t, seed ^ (k as u64).wrapping_mul(0x51ED));
+            let mut join = None;
             if let Some(target) = t.joins.filter(|&j| j < done.len()) {
                 let main = &done[target];
                 let last = t.pts.len() - 1;
@@ -246,30 +360,82 @@ impl Rivers {
                     l(main.pts[i].0, main.pts[j].0),
                     l(main.pts[i].1, main.pts[j].1),
                 );
-                t.surf[last] = l(main.surf[i], main.surf[j]);
-            }
-            // Water never runs uphill: where the course would climb, it cuts down instead.
-            for i in 1..t.surf.len() {
-                t.surf[i] = t.surf[i].min(t.surf[i - 1]);
+                join = Some((target, i, f));
             }
             done.push(t);
+            joins.push(join);
         }
+        let grounds: Vec<Vec<Ground>> = par_map(&done, |t| fit(t, ground, lift));
+
+        // Water levels, main rivers first: never rising downstream, below the ground beside
+        // the channel, and never below the water the river ends in.
+        let mut banks: Vec<Vec<f64>> = Vec::with_capacity(done.len());
+        let mut lips: Vec<Vec<bool>> = Vec::with_capacity(done.len());
+        let edge = |p: (f64, f64)| p.0 < 0.0 || p.1 < 0.0 || p.0 > size as f64 || p.1 > size as f64;
+        for k in 0..done.len() {
+            if let Some((target, i, f)) = joins[k] {
+                let main = &done[target].surf;
+                let j = (i + 1).min(main.len() - 1);
+                let v = main[i] + (main[j] - main[i]) * f;
+                *done[k].surf.last_mut().unwrap() = v;
+            }
+            let t = &mut done[k];
+            let m = t.surf.len();
+            let floor = if edge(t.pts[m - 1]) {
+                f64::MIN
+            } else {
+                t.surf[m - 1]
+            };
+            let mut prev = f64::MAX;
+            for (i, g) in grounds[k].iter().enumerate() {
+                let v = t.surf[i].min(prev).min(g.low).max(floor);
+                // Raised to the level of wetland pools where the banks allow it.
+                let v = v.max(g.lift.min(g.low).min(prev));
+                t.surf[i] = v;
+                prev = v;
+            }
+            let fitted = std::mem::take(&mut t.surf);
+            let (surf, falls) = steps(&t.pts, &fitted, seed ^ (k as u64).wrapping_mul(0xFA11));
+            t.surf = surf;
+            banks.push(fitted);
+            lips.push(falls);
+        }
+
         let mut segs = Vec::new();
-        for t in &done {
-            for i in 0..t.pts.len().saturating_sub(1) {
+        for (k, (t, g)) in done.iter().zip(&grounds).enumerate() {
+            let (bank, fall) = (&banks[k], &lips[k]);
+            let m = t.pts.len();
+            for i in 0..m.saturating_sub(1) {
                 let (wa, wb) = (t.half[i] as f32, t.half[i + 1] as f32);
                 // Widest the channel gets where it pools.
                 let w = wa.max(wb) * 1.7;
+                let fp = floodplain(w);
+                // The valley side must climb out of the ground beside it before it ends.
+                let climb = (g[i].high.max(g[i + 1].high) - bank[i + 1]) as f32 - 0.12 * fp;
+                let side = if climb <= 7.2 {
+                    climb / 0.9
+                } else {
+                    8.0 + (-0.9 + (0.81 + 0.48 * (climb - 7.2)).sqrt()) / 0.24
+                };
+                // Plunge pools: deeper water for a few blocks below each fall.
+                let plunge = (i.saturating_sub(4)..=i + 1)
+                    .filter(|&j| j > 0 && j < m && fall[j])
+                    .map(|j| (1.0 + 0.35 * (t.surf[j - 1] - t.surf[j])).min(5.0))
+                    .fold(0.0, f64::max);
                 segs.push(Segment {
                     a: (t.pts[i].0 as f32, t.pts[i].1 as f32),
                     b: (t.pts[i + 1].0 as f32, t.pts[i + 1].1 as f32),
                     sa: t.surf[i] as f32,
                     sb: t.surf[i + 1] as f32,
+                    ba: bank[i] as f32,
+                    bb: bank[i + 1] as f32,
                     wa,
                     wb,
                     da: t.depth[i] as f32,
                     db: t.depth[i + 1] as f32,
-                    reach: w + floodplain(w) + 24.0,
+                    reach: w + fp + (side + 6.0).clamp(24.0, 96.0),
+                    fall: fall[i + 1],
+                    plunge: plunge as f32,
                 });
             }
         }
@@ -326,7 +492,8 @@ impl Rivers {
         // Highest water surface whose bank the column is on.
         let mut bank: Option<i32> = None;
         let mut edge = f32::MAX;
-        let mut nearest = 0;
+        let mut strength = 1.0f32;
+        let mut fall = None;
         let mut shape: Option<Shape> = None;
         for &k in list {
             let s = &self.segs[k as usize];
@@ -344,24 +511,36 @@ impl Rivers {
             }
             let sh = *shape.get_or_insert_with(|| Shape::at(self.seed, px, pz));
             let w = (s.wa + (s.wb - s.wa) * f) * sh.width;
-            let smooth = s.sa + (s.sb - s.sa) * f;
+            // Below a lip the water is already at the pool's level: the fall is vertical.
+            let smooth = if s.fall {
+                s.sb
+            } else {
+                s.sa + (s.sb - s.sa) * f
+            };
             let surface = smooth.floor();
-            let depth = s.da + (s.db - s.da) * f;
-            cut = cut.min(profile(d, w, depth, surface, smooth, sh));
-            if d - w < edge {
-                edge = d - w;
-                nearest = surface as i32;
+            let banks = s.ba + (s.bb - s.ba) * f;
+            let depth = s.da + (s.db - s.da) * f + s.plunge;
+            let c = profile(d, w, depth, surface, banks.max(smooth), sh);
+            if c < cut {
+                cut = c;
+                strength = 1.0 - smoothstep(s.reach as f64 - 12.0, s.reach as f64, d as f64) as f32;
             }
+            edge = edge.min(d - w);
             if d < w {
                 let r = d / w;
                 if channel.is_none_or(|c| r < c.0) {
                     channel = Some((r, surface as i32));
+                    fall = s.fall.then_some(s.sa.floor() as i32);
                 }
             } else if d - w < 1.5 {
                 // Hold the water a block or two along the river too, where the surface
-                // steps down beside the bank.
-                let ahead = (s.sa - s.sb).abs() / len2.sqrt().max(1.0) * 2.0;
-                let level = (smooth + ahead).floor() as i32;
+                // steps down beside the bank; beside a fall, the water above the lip.
+                let level = if s.fall {
+                    s.sa.floor() as i32
+                } else {
+                    let ahead = (s.sa - s.sb).abs() / len2.sqrt().max(1.0) * 2.0;
+                    (smooth + ahead).floor() as i32
+                };
                 bank = Some(bank.map_or(level, |b| b.max(level)));
             }
         }
@@ -370,7 +549,8 @@ impl Rivers {
             channel: channel.map(|c| c.1),
             bank,
             edge,
-            level: nearest,
+            fall,
+            strength,
         })
     }
 }
@@ -546,7 +726,9 @@ mod tests {
 
     #[test]
     fn carves_a_channel_with_dry_banks() {
-        let r = Rivers::build(vec![straight(30, 70.5)], 3, 256);
+        let r = Rivers::build(vec![straight(30, 70.5)], 3, 256, &|_, _| 100.0, &|_, _| {
+            f64::MIN
+        });
         // Centre of the channel: under water.
         let hit = r.at(80.0, 100.0).unwrap();
         let h = hit.apply_rough(75.0, 0.0);
@@ -574,7 +756,7 @@ mod tests {
     fn surface_never_rises_downstream() {
         let mut t = straight(20, 70.0);
         t.surf[10] = 90.0; // a bump the water would have to climb
-        let r = Rivers::build(vec![t], 1, 256);
+        let r = Rivers::build(vec![t], 1, 256, &|_, _| 100.0, &|_, _| f64::MIN);
         for s in &r.segs {
             assert!(s.sb <= s.sa + 1e-4);
         }
@@ -591,7 +773,7 @@ mod tests {
             joins: Some(0),
             meander: 0.0,
         };
-        let r = Rivers::build(vec![main, trib], 1, 256);
+        let r = Rivers::build(vec![main, trib], 1, 256, &|_, _| 100.0, &|_, _| f64::MIN);
         let last = r.segs.last().unwrap();
         let hit = r.at(last.b.0 as f64, last.b.1 as f64).unwrap();
         assert!(hit.channel.is_some());

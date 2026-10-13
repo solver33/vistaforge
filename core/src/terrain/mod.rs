@@ -38,7 +38,7 @@ use edits::Zone;
 use grid::{lerp, smoothstep, Field};
 use hydro::NONE;
 use layout::{is_mountain, Bands, Mix, Params, Top2, NPARAMS};
-use noise::{fbm, perlin, ridged, warp};
+use noise::{fbm, gully, perlin, ridged, warp};
 use rivers::Rivers;
 
 /// How much whole-map work to do: previews need an answer in about a second.
@@ -80,6 +80,8 @@ pub struct Terrain {
     rough: Field,
     terrace: Field,
     steep: Field,
+    /// Height added by gullies on steep ground, on a 4-block grid.
+    gullies: Field,
     swamp: Field,
     pools: Field,
     /// Smoothed ground: wetland water tables follow it.
@@ -122,6 +124,8 @@ struct Sample {
     beach: f32,
     /// Wetland weight 0..1.
     swampy: f32,
+    /// Top of a waterfall standing on this column's water.
+    fall: Option<i32>,
 }
 
 /// How high dry ground must be beside standing water with `surface`, where the water's
@@ -129,6 +133,30 @@ struct Sample {
 /// sloping away beyond that.
 fn shore_floor(surface: i32, weight: f32) -> f32 {
     surface as f32 - (0.175 - weight).max(0.0) * 16.0
+}
+
+/// Gullies and spurs running down steep ground, a few octaves deep, each bending the next one
+/// towards it (an erosion filter). They are as deep as the slope is steep, so high mountains
+/// get deep ravines and sharp ridges between them, and gentle land none. `slope` is the macro
+/// ground's slope along x and z; `octaves` from 96 blocks across, each half the last.
+fn gullies(seed: u64, x: f64, z: f64, slope: (f64, f64), octaves: u64) -> f64 {
+    let (mut gx, mut gz) = slope;
+    let steep = gx.hypot(gz);
+    let amount = smoothstep(0.12, 0.55, steep);
+    if amount <= 0.0 {
+        return 0.0;
+    }
+    let mut h = 0.0;
+    let mut wave = 96.0;
+    for o in 0..octaves {
+        let amp = 0.075 * steep * wave;
+        let (v, dx, dz) = gully(seed ^ (0x6011 + o), x / wave, z / wave, gx, gz);
+        h += amp * v;
+        gx += amp * dx / wave;
+        gz += amp * dz / wave;
+        wave *= 0.5;
+    }
+    h * amount
 }
 
 fn ground_y(h: f32) -> i32 {
@@ -328,25 +356,6 @@ impl Terrain {
         }
         let fl = hydro::flood(&height.data, n, &seeds(&height.data));
         let area = hydro::drainage(&fl, &rain);
-        let rivers = {
-            let mut traces = drawn_traces;
-            if sl.rivers > 0.02 {
-                let a_min = 100.0 * 25f32.powf(1.0 - sl.rivers.clamp(0.0, 1.0));
-                traces.extend(rivers::trace(&rivers::Network {
-                    n,
-                    cell: CELL,
-                    flood: &fl,
-                    area: &area,
-                    water: &w,
-                    sea_surface: sea_f,
-                    a_min,
-                    width: 0.4 + 0.6 * sl.rivers.clamp(0.0, 1.0),
-                    drawn: &drawn,
-                    drawn_count: traces.len(),
-                }));
-            }
-            Rivers::build(traces, seed ^ 0x7177, size)
-        };
 
         // Derived fields.
         let total = (n * n) as f32;
@@ -363,21 +372,33 @@ impl Terrain {
         };
         let sea_dist = field(grid::distance(&w.sea, n, CELL));
         let lake_dist = field(grid::distance(&is_lake, n, CELL));
-        // Lakes at the level of wetland pools: the pools run down into their hollows.
         // The level wetlands were flattened to; their pools fill to the block below it.
         let wet_table = sea_f as f64 + (1.3 * relief).round() + 1.05;
-        let pool_level = wet_table.floor() as i32;
-        let wet_lake: Vec<bool> = w
-            .lake
-            .iter()
-            .map(|&l| l != NONE && w.surface[l as usize] >= pool_level)
-            .collect();
-        let wet_lake_dist = field(grid::distance(&wet_lake, n, CELL));
         let steep = Field::from_fn(n, CELL, |i, j| {
             let at = |a: usize, b: usize| height.at(a.min(n - 1), b.min(n - 1));
             let dx = at(i + 1, j) - at(i.saturating_sub(1), j);
             let dz = at(i, j + 1) - at(i, j.saturating_sub(1));
             (dx.hypot(dz) / (2.0 * CELL as f32)).min(4.0)
+        });
+        let slope_along = |dx: usize, dz: usize| {
+            Field::from_fn(n, CELL, |i, j| {
+                let at = |a: usize, b: usize| height.at(a.min(n - 1), b.min(n - 1));
+                let (i0, j0) = (i.saturating_sub(dx), j.saturating_sub(dz));
+                let (i1, j1) = (i + dx, j + dz);
+                let span = ((i1.min(n - 1) - i0) + (j1.min(n - 1) - j0)).max(1) as f32;
+                (at(i1, j1) - at(i0, j0)) / (span * CELL as f32)
+            })
+        };
+        let (slope_x, slope_z) = (slope_along(1, 0), slope_along(0, 1));
+        // Previews skip the finest gullies.
+        let (gcell, octaves) = match quality {
+            Quality::Full => (4.0, 3),
+            Quality::Preview => (CELL, 2),
+        };
+        let gully_field = Field::from_fn((size as f64 / gcell) as usize + 2, gcell, |i, j| {
+            let (x, z) = (i as f64 * gcell, j as f64 * gcell);
+            let slope = (slope_x.bilinear(x, z), slope_z.bilinear(x, z));
+            gullies(seed, x, z, slope, octaves) as f32
         });
         let mut table = height.clone();
         table.blur(4, 2);
@@ -432,11 +453,12 @@ impl Terrain {
             rough: take(&mut pf, 4),
             terrace: take(&mut pf, 6),
             steep,
+            gullies: gully_field,
             swamp: take(&mut pf, 7),
             pools: take(&mut pf, 8),
             table,
             wet_table,
-            wet_lake_dist,
+            wet_lake_dist: Field::new(1, CELL, f32::MAX),
             wet: regions.w,
             drain,
             sea_dist,
@@ -444,11 +466,11 @@ impl Terrain {
             lift,
             top2,
             lake: lake_reach,
-            lake_surface: w.surface,
+            lake_surface: w.surface.clone(),
             lake_nodes,
             sea: sea_reach,
             fine: None,
-            rivers,
+            rivers: Rivers::build(Vec::new(), 0, size, &|_, _| 0.0, &|_, _| 0.0),
             zones: edits::zones(&settings.edits, seed),
             detail_amp,
             blend_warp: 6.0 + 10.0 * clamp(sl.biome_blend),
@@ -457,7 +479,128 @@ impl Terrain {
         if quality == Quality::Full {
             terrain.fine = Some(terrain.droplet_erosion());
         }
+
+        // 5. Water fitted to the ground at block scale: lakes come down to the lowest point
+        // of their rim, and rivers stay below their banks.
+        terrain.fit_lakes(&placed);
+        w.surface.clone_from(&terrain.lake_surface);
+        // Lakes at the level of wetland pools: the pools run down into their hollows.
+        let pool_level = wet_table.floor() as i32;
+        let wet_lake: Vec<bool> = w
+            .lake
+            .iter()
+            .map(|&l| l != NONE && w.surface[l as usize] >= pool_level)
+            .collect();
+        terrain.wet_lake_dist = field(grid::distance(&wet_lake, n, CELL));
+        let mut traces = drawn_traces;
+        if sl.rivers > 0.02 {
+            let a_min = 100.0 * 25f32.powf(1.0 - sl.rivers.clamp(0.0, 1.0));
+            traces.extend(rivers::trace(&rivers::Network {
+                n,
+                cell: CELL,
+                flood: &fl,
+                area: &area,
+                water: &w,
+                sea_surface: sea_f,
+                a_min,
+                width: 0.4 + 0.6 * sl.rivers.clamp(0.0, 1.0),
+                drawn: &drawn,
+                drawn_count: traces.len(),
+            }));
+        }
+        let ground = |x: f64, z: f64| terrain.natural(x, z, terrain.swamp.bilinear(x, z));
+        // In wetlands rivers are slow channels at the level of the pools, not cut into the
+        // ground; the lift fades in at the wetland's edge.
+        let pools = wet_table.floor();
+        let lift = |x: f64, z: f64| {
+            let swampy = terrain.swamp.bilinear(x, z);
+            match smoothstep(0.3, 0.6, swampy) {
+                0.0 => f64::MIN,
+                t => pools - 1.0 + t + 0.01,
+            }
+        };
+        let rivers = Rivers::build(traces, seed ^ 0x7177, size, &ground, &lift);
+        terrain.rivers = rivers;
         Ok(terrain)
+    }
+
+    /// Lowers lakes whose rim dips below their water between the macro nodes, where the
+    /// lake would otherwise need a wall to hold it: on a slope, the ground past a lake's
+    /// outlet falls away faster than the macro grid shows. A low lip of up to two blocks
+    /// may stay. Wetlands are left to their pools, and lakes the user placed (with a node in
+    /// `placed`) keep their level.
+    fn fit_lakes(&mut self, placed: &[bool]) {
+        let n = self.n;
+        let corners = |i: usize, j: usize| {
+            [
+                j * n + i,
+                j * n + i + 1,
+                (j + 1) * n + i,
+                (j + 1) * n + i + 1,
+            ]
+        };
+        let cells: Vec<(usize, usize)> = (0..n - 1)
+            .flat_map(|j| (0..n - 1).map(move |i| (i, j)))
+            .filter(|&(i, j)| corners(i, j).iter().any(|&k| self.lake[k] != NONE))
+            .collect();
+        let this = &*self;
+        let lows: Vec<Vec<(u32, f64)>> = grid::par_map(&cells, |&(i, j)| {
+            let ks = corners(i, j);
+            let mut out: Vec<(u32, f64)> = Vec::new();
+            let c = CELL as usize;
+            let mut seen: Vec<u32> = Vec::with_capacity(4);
+            for dz in 0..c {
+                for dx in 0..c {
+                    let (tx, tz) = (dx as f32 / CELL as f32, dz as f32 / CELL as f32);
+                    let ws = [
+                        (1.0 - tx) * (1.0 - tz),
+                        tx * (1.0 - tz),
+                        (1.0 - tx) * tz,
+                        tx * tz,
+                    ];
+                    let (x, z) = ((i * c + dx) as f64, (j * c + dz) as f64);
+                    let mut g = None;
+                    seen.clear();
+                    for a in 0..4 {
+                        let l = this.lake[ks[a]];
+                        if l == NONE || seen.contains(&l) {
+                            continue;
+                        }
+                        seen.push(l);
+                        let lambda: f32 = (0..4)
+                            .filter(|&b| this.lake[ks[b]] == l)
+                            .map(|b| ws[b])
+                            .sum();
+                        if lambda <= 0.0 || lambda >= 0.3 {
+                            continue;
+                        }
+                        let swampy = this.swamp.bilinear(x, z);
+                        if swampy > 0.3 {
+                            continue;
+                        }
+                        let g = *g.get_or_insert_with(|| this.natural(x, z, swampy));
+                        let allow = g + 2.0 + (0.175 - lambda as f64).max(0.0) * 16.0;
+                        match out.iter_mut().find(|o| o.0 == l) {
+                            Some(o) => o.1 = o.1.min(allow),
+                            None => out.push((l, allow)),
+                        }
+                    }
+                }
+            }
+            out
+        });
+        let mut keep = vec![false; self.lake_surface.len()];
+        for (k, &l) in self.lake.iter().enumerate() {
+            if l != NONE && placed[k] {
+                keep[l as usize] = true;
+            }
+        }
+        for (l, allow) in lows.into_iter().flatten() {
+            if !keep[l as usize] {
+                let s = &mut self.lake_surface[l as usize];
+                *s = (*s).min(allow.floor() as i32);
+            }
+        }
     }
 
     /// Side of the map in blocks.
@@ -482,6 +625,7 @@ impl Terrain {
         let shore = 0.35 + 0.65 * smoothstep(4.0, 28.0, self.lake_dist.bilinear(x, z));
         self.height.cubic(x, z)
             + self.rough.bilinear(x, z) * self.detail_amp * shore * self.detail(x, z)
+            + shore * self.gullies.bilinear(x, z)
     }
 
     fn droplet_erosion(&self) -> Fine {
@@ -622,10 +766,11 @@ impl Terrain {
             - 1.1 * channel
     }
 
-    fn sample(&self, x: i32, z: i32) -> Sample {
-        let (fx, fz) = (x as f64, z as f64);
-        // `hs` is the ground without block-scale unevenness; water edges follow it, so
-        // shores are clean lines rather than speckles.
+    /// Ground before any water shapes it: the smooth ground with droplet erosion, rock
+    /// ledges on steep slopes and wetlands flattened to their water table. It has no
+    /// block-scale unevenness, so water edges that follow it are clean lines. Lake and river
+    /// levels are fitted to it.
+    fn natural(&self, fx: f64, fz: f64, swampy: f64) -> f64 {
         let mut hs = self.smooth_ground(fx, fz);
         if let Some(fine) = &self.fine {
             hs += fine.delta.bilinear(fx, fz);
@@ -644,9 +789,27 @@ impl Terrain {
             hs = lerp(hs, stepped, ledges * 0.6);
         }
 
-        // Wetlands: flat ground around a water table, with pools where it dips below.
-        // Deeper hollows (lake beds, river valleys) keep their shape.
+        // Wetland cores sit at one water table for the whole map; deeper hollows (lake
+        // beds, river valleys) keep their shape.
+        if swampy > 0.05 {
+            let table = self.table.bilinear(fx, fz);
+            let off = (table - self.wet_table).abs();
+            let p = self.wet_table.floor();
+            let core = smoothstep(0.45, 0.25, off);
+            let floor = lerp(table - 0.5, p - 1.0, core);
+            let target = floor + 1.0 + self.wetland(fx, fz, self.pools.bilinear(fx, fz));
+            let keep = smoothstep(1.5, 3.0, table - hs);
+            hs = lerp(hs, target, smoothstep(0.15, 0.7, swampy) * (1.0 - keep));
+        }
+        hs
+    }
+
+    fn sample(&self, x: i32, z: i32) -> Sample {
+        let (fx, fz) = (x as f64, z as f64);
         let swampy = self.swamp.bilinear(fx, fz);
+        let mut hs = self.natural(fx, fz, swampy);
+
+        // Wetlands: pools where the flattened ground dips below the water table.
         let (lake, sea) = self.standing_water(fx, fz);
         // Where the reaches of two lakes meet, dry ground holds back the higher one.
         let rim_water = self.lake_rim(fx, fz);
@@ -657,14 +820,8 @@ impl Terrain {
         let mut pool_rim = None;
         if swampy > 0.05 {
             let table = self.table.bilinear(fx, fz);
-            // Wetland cores sit at one water table for the whole map; pools fill to `p`.
-            let off = (table - self.wet_table).abs();
+            // Pools fill to `p`, the block below the water table.
             let p = self.wet_table.floor();
-            let core = smoothstep(0.45, 0.25, off);
-            let floor = lerp(table - 0.5, p - 1.0, core);
-            let target = floor + 1.0 + self.wetland(fx, fz, self.pools.bilinear(fx, fz));
-            let keep = smoothstep(1.5, 3.0, table - hs);
-            hs = lerp(hs, target, smoothstep(0.15, 0.7, swampy) * (1.0 - keep));
             // Pools reach down into hollows that hold a lake at the same level; elsewhere
             // they stop a little below the table, where a low rim holds them in.
             let rel = table - self.wet_table;
@@ -707,19 +864,7 @@ impl Terrain {
         let mut hs = hs as f32;
         let mut h =
             hs + (self.rough.bilinear(fx, fz) * self.detail_amp * self.micro(fx, fz)) as f32;
-        let mut cut = self.rivers.at(fx, fz);
-        if let (Some(c), true) = (&mut cut, swampy > 0.3) {
-            // In wetlands rivers are slow channels at the level of the pools, not cut into
-            // the ground. The lift fades in, so the surface rises in 1-block steps at the
-            // wetland's edge; banks round up so they hold the higher water beside them.
-            let pools = self.wet_table.floor() as f32;
-            let lift = smoothstep(0.3, 0.6, swampy) as f32 * (pools - c.level as f32).max(0.0);
-            let (up, banks) = (lift.round() as i32, lift.ceil() as i32);
-            c.cut += lift;
-            c.channel = c.channel.map(|s| s + up);
-            c.bank = c.bank.map(|b| b + banks);
-            c.level += up;
-        }
+        let cut = self.rivers.at(fx, fz);
         if let Some(c) = &cut {
             let jitter = (perlin(self.seed ^ 0x51F, fx / 13.0, fz / 13.0)
                 + 0.5 * perlin(self.seed ^ 0x520, fx / 5.0, fz / 5.0))
@@ -802,6 +947,10 @@ impl Terrain {
             river_edge: cut.map_or(1e9, |c| c.edge),
             beach,
             swampy: swampy as f32,
+            fall: match (water, cut.and_then(|c| c.fall), surface) {
+                (WaterKind::River, Some(top), Some(s)) if top > s => Some(top - 1),
+                _ => None,
+            },
         }
     }
 
@@ -1003,6 +1152,7 @@ impl Terrain {
             moisture,
             rock,
             flow: flow.clamp(0.0, 1.0),
+            fall: s.fall,
         }
     }
 
