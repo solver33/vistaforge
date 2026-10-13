@@ -67,3 +67,47 @@ vistaforge testworld --catalog <catalog.json> --out <saves folder>     # 256×25
 - CR's water texture is darker than vanilla's. Tinted by plains water colour, lakes look very dark navy. Choose Minecraft biomes with lighter water colours for water areas.
 - CR layer blocks have `layers` 1–8. Plants (`PlantsDense`) take the `layers` value of the layer they stand on (8 on a full block).
 - CR branches connect only to the branch family. `up` is set when the block below is sturdy or a branch. A post on a log pillar is forced to `up=true`, which is a deliberate deviation.
+
+## Workstreams
+
+Each workstream has its own branch and owns its own directories. Every workstream rebases on `main` before opening a PR, and merges its own PR once CI is green.
+
+| Workstream | Branch | Owns |
+|---|---|---|
+| Engine and integration | `claude/engine-*` | `core/src/engine`, contract files, `anvil/level/nbt/world/catalog/png/noise`, `core/src/main.rs`, root `Cargo.toml` |
+| Terrain and presets | `claude/terrain` | `core/src/terrain/**` |
+| World detail | `claude/world-detail` | `core/src/surface/**`, `core/src/decor/**` |
+| Trees | `claude/trees` | `core/src/trees/**` |
+| Desktop app | `claude/app` | `app/**`, `.github/workflows/app.yml` |
+
+**Terrain and presets**
+- Realistic land: warped and ridged noise, plus whole-map hydraulic and thermal erosion. Erosion may run coarse and be upsampled, with detail noise added on top.
+- Rivers that run downhill into lakes or the sea, and lakes, ponds and swamp pools.
+- A biome layout drawn from the biome mix, with blend zones, altitude bands such as the tree line and snow line, and moisture.
+- Every `ShapeEdit` kind.
+- Fill in every `ColumnInfo` field.
+- As many presets as make sense: plains, meadow, forests of each kind, taiga, swamp, marsh, highlands, realistic mountains, alpine valley, river valley, lake district, and mixes of them.
+
+**World detail**
+- Curate block sets per biome from the CR 1.7.0 catalog. These cover:
+  - grass, clover, moss, podzol, coarse dirt, mud, sand, gravel, stone and snow layers;
+  - rock strata on slopes and cliffs;
+  - shores and river beds.
+- Plants in natural clusters, using the many CR grasses, flowers, ferns, reeds and sedges.
+- Rocks and boulders made of CR stone shapes, fallen logs, ground leaves and moss.
+- Tree placement per biome: species, density, groves and clearings.
+- Water colours via the choice of Minecraft biome.
+- Preview colours.
+
+**Trees**
+- Species built from CR pieces for each wood type: oak, birch, spruce, pine, willow, dead trees, bushes and young trees.
+- Thick trunks from pillars and vertical quarters, branch tips, roots and stumps.
+- A size range for every species.
+- Side renders of each species as evidence. Stay within `MAX_REACH`.
+
+**Desktop app**
+- Tauri 2, a TypeScript UI and a three.js preview. Webkit is missing in the cloud container, so the Tauri crate stays out of the root cargo workspace and builds on Windows CI. The UI is developed against a mocked backend.
+- Inputs: the catalog file, the saves folder, presets, size, seed, the biome mix and the sliders.
+- A 3D preview, and a 2D map where `ShapeEdit`s are placed by dragging.
+- Export with progress and cancel, and save and load of settings JSON.
+- English UI.
