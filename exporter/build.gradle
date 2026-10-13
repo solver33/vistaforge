@@ -1,0 +1,30 @@
+plugins {
+    id 'java'
+}
+
+group = 'io.github.solver33.vistaforge'
+version = '0.1.0'
+
+base {
+    archivesName = 'vistaforge-exporter'
+}
+
+// The mod reaches Minecraft and Fabric API through reflection, so it does not compile against them.
+// The small Fabric Loader and SLF4J interfaces it does call are compile-only stubs in src/stubs;
+// the real classes come from the game at runtime and the stubs are not packaged.
+sourceSets {
+    stubs
+}
+sourceSets.main.compileClasspath += sourceSets.stubs.output
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+    options.encoding = 'UTF-8'
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand version: project.version
+    }
+}

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "vistaforge_exporter",
+  "version": "${version}",
+  "name": "Vistaforge Exporter",
+  "description": "Writes every registered block, its block states and average texture colours to vistaforge/catalog.json in the game folder, for the Vistaforge map generator. Runs once per launch, client side only.",
+  "authors": ["solver33"],
+  "contact": {
+    "sources": "https://github.com/solver33/vistaforge"
+  },
+  "environment": "client",
+  "entrypoints": {
+    "client": ["io.github.solver33.vistaforge.exporter.VistaforgeExporter"]
+  },
+  "depends": {
+    "fabricloader": ">=0.14.21",
+    "minecraft": "~1.20.1",
+    "java": ">=17"
+  },
+  "recommends": {
+    "fabric-api": "*"
+  }
+}
