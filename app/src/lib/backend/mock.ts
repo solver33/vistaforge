@@ -108,6 +108,10 @@ const PRESETS: Preset[] = [
   preset('river_valley', 'River valley', 'A broad valley with a winding river between forested hills.', [['plains', 2], ['forest', 2], ['meadow', 1]], { rivers: 0.85 }),
   preset('lake_district', 'Lake district', 'Hills and many lakes.', [['forest', 2], ['highlands', 1], ['meadow', 1]], { water: 0.9, relief: 0.6 }),
   preset('mixed', 'Mixed lands', 'A bit of everything.', [['plains', 2], ['forest', 2], ['taiga', 1], ['swamp', 1], ['mountains', 1], ['meadow', 1]]),
+  {
+    ...preset('epic_peaks', 'Epic peaks', 'Tall world: rock and snow far above forested valleys.', [['mountains', 2], ['snowy_peaks', 2], ['taiga', 1]], { relief: 0.65, mountains: 1 }),
+    world_height: 'tall',
+  },
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

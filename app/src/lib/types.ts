@@ -52,6 +52,8 @@ export interface Preset {
   biomes: BiomeShare[];
   sliders: Sliders;
   sea_level: number;
+  /** Set on presets made for one world height (the tall ones); others keep the user's choice. */
+  world_height?: WorldHeight;
 }
 
 export interface BiomeInfo {

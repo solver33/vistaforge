@@ -32,7 +32,7 @@ test('starts with the detected game and draws the map', async ({ page }) => {
   const problems = await open(page);
   await expect(page.getByTestId('catalog')).toContainText('Conquest Reforged 1.7.0 · 19,168 blocks');
   await expect(page.getByTestId('saves')).toContainText('saves');
-  await expect(page.locator('[data-preset]')).toHaveCount(10);
+  await expect(page.locator('[data-preset]')).toHaveCount(11);
   await expect(page.getByTestId('export')).toBeEnabled();
   // The 3D view has rendered frames.
   await expect
@@ -71,7 +71,7 @@ test('filter the presets, and the sea sliders sit with the water ones', async ({
   await expect(page.locator('[data-preset]')).toHaveCount(0);
   await expect(page.getByTestId('presets')).toContainText('No preset matches');
   await filter.press('Escape');
-  await expect(page.locator('[data-preset]')).toHaveCount(10);
+  await expect(page.locator('[data-preset]')).toHaveCount(11);
 
   const water = page.locator('[data-group="Water"]');
   await expect(water.getByTestId('slider-sea')).toHaveValue('0');
@@ -162,6 +162,23 @@ test('a tall world raises the height limits, and going back lowers what is too h
   await page.getByTestId('undo').click();
   await expect(page.locator('[data-height="tall"]')).toHaveClass(/on/);
   await expect(page.getByTestId('edits')).toContainText('1500 high');
+  expect(problems).toEqual([]);
+});
+
+test('a preset made for a tall world switches the height; others keep it', async ({ page }) => {
+  const problems = await open(page);
+  const peaks = page.locator('[data-preset="epic_peaks"]');
+  await expect(peaks.locator('.tall')).toHaveText('Tall');
+  await expect(page.locator('[data-preset="plains"] .tall')).toHaveCount(0);
+  await peaks.click();
+  await expect(page.locator('[data-height="tall"]')).toHaveClass(/on/);
+  await page.locator('[data-preset="plains"]').click();
+  await expect(page.locator('[data-height="tall"]')).toHaveClass(/on/);
+  await peaks.click();
+  await page.locator('[data-height="standard"]').click();
+  await expect(page.getByText('modified')).toBeVisible();
+  await page.getByTestId('undo').click();
+  await expect(page.getByText('modified')).toHaveCount(0);
   expect(problems).toEqual([]);
 });
 
