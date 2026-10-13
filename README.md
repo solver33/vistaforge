@@ -7,6 +7,25 @@ terrain presets, biome blending, procedural trees made from the mod's tree piece
 The app never ships or reads Conquest Reforged files. It only needs block ids and block states,
 which the exporter mod below dumps from your own modpack.
 
+## Core
+
+`core/` is the Rust library and command-line tool that turns the catalog into a Minecraft 1.20.1
+world: a block-state catalog loader, an NBT and Anvil region writer, a `level.dat` writer with an
+empty (void) superflat generator around the map, and the generators.
+
+For now it has one generator, a 256×256 test map used to check the world format in the game:
+
+```
+cargo run --release -- testworld --catalog path/to/catalog.json --out out
+```
+
+This writes `out/Vistaforge Test`. Copy that folder into the game's `saves` folder. The world is
+creative, with a fixed midday and no mobs. Chunks are saved unlit, so the game computes lighting
+on first load.
+
+`tools/check_world.py` reads a generated world back with an independent NBT parser (nbtlib),
+checks every block state against the catalog and draws a top-down preview (needs nbtlib and Pillow).
+
 ## Exporter mod
 
 `exporter/` is a small client-side Fabric mod for Minecraft 1.20.1. Once per launch, after the game

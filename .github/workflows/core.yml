@@ -1,0 +1,35 @@
+name: Core
+
+on:
+  push:
+    paths:
+      - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/core.yml'
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/core.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: cargo test --locked
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vistaforge-windows
+          path: target/release/vistaforge.exe
