@@ -144,6 +144,10 @@
       c.arc(x, y, r, 0, Math.PI * 2);
       c.fillStyle = rgba(color.startsWith('#') ? color : '#c58fd6', selected ? 0.24 : 0.14);
       c.fill();
+      // A dark halo keeps the outline visible on ground of the same colour (a forest zone on forest).
+      c.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+      c.lineWidth = (selected ? 2.5 : 1.5) + 2;
+      c.stroke();
       c.strokeStyle = selected || hovered ? '#ffffff' : color;
       c.lineWidth = selected ? 2.5 : 1.5;
       if (e.kind === 'biome_zone' || e.kind === 'plateau') c.setLineDash([7, 5]);

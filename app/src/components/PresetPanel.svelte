@@ -4,6 +4,31 @@
   import Section from './Section.svelte';
 
   const presets = $derived(app.info?.presets ?? []);
+  /** With more presets than this, the list scrolls and gets a filter box. */
+  const MANY = 8;
+  let filter = $state('');
+  let grid = $state<HTMLDivElement>();
+
+  const shown = $derived.by(() => {
+    const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return presets;
+    return presets.filter((p) => {
+      const text = [p.name, p.description, ...p.biomes.map((b) => app.biomeName(b.biome))].join(' ').toLowerCase();
+      return words.every((w) => text.includes(w));
+    });
+  });
+
+  // Keep the chosen preset in sight in the scrolling list, without scrolling the side panel.
+  $effect(() => {
+    const id = app.settings.preset;
+    const card = grid?.querySelector<HTMLElement>(`[data-preset="${CSS.escape(id)}"]`);
+    if (!grid || !card) return;
+    const top = card.offsetTop - grid.offsetTop;
+    if (top < grid.scrollTop) grid.scrollTop = top;
+    else if (top + card.offsetHeight > grid.scrollTop + grid.clientHeight) {
+      grid.scrollTop = top + card.offsetHeight - grid.clientHeight;
+    }
+  });
 </script>
 
 <Section title="Preset">
@@ -12,8 +37,21 @@
       <span class="badge" title="The biomes or sliders differ from the preset">modified</span>
     {/if}
   {/snippet}
-  <div class="grid" data-testid="presets">
-    {#each presets as p (p.id)}
+  {#if presets.length > MANY}
+    <input
+      class="filter"
+      type="search"
+      placeholder={`Filter ${presets.length} presets`}
+      aria-label="Filter presets"
+      data-testid="preset-filter"
+      bind:value={filter}
+      onkeydown={(e) => {
+        if (e.key === 'Escape') filter = '';
+      }}
+    />
+  {/if}
+  <div class="grid" class:many={presets.length > MANY} data-testid="presets" bind:this={grid}>
+    {#each shown as p (p.id)}
       {@const total = p.biomes.reduce((t, b) => t + b.share, 0) || 1}
       <button
         class="preset"
@@ -30,6 +68,8 @@
         <span class="pname">{p.name}</span>
         <span class="pdesc">{p.description}</span>
       </button>
+    {:else}
+      <p class="none faint">No preset matches “{filter}”.</p>
     {/each}
   </div>
 </Section>
@@ -39,6 +79,24 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 6px;
+  }
+
+  .grid.many {
+    max-height: 316px;
+    overflow-y: auto;
+    padding-right: 4px;
+    align-content: start;
+  }
+
+  .filter {
+    width: 100%;
+    margin-bottom: 8px;
+  }
+
+  .none {
+    grid-column: 1 / -1;
+    margin: 4px 0;
+    font-size: 12px;
   }
 
   .preset {

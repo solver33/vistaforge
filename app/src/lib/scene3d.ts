@@ -15,8 +15,10 @@ export interface SceneOptions {
 
 const SKY = new THREE.Color('#a9c6dc');
 const WATER = new THREE.Color('#2e6a8e');
-/** Most trees drawn; beyond this, every n-th tree is shown. */
+/** Most trees drawn; beyond this, an even sample is shown. The bridge sends no more. */
 const MAX_TREES = 120_000;
+/** Above this many trees, crowns use fewer triangles: they are a few pixels wide anyway. */
+const DENSE_TREES = 30_000;
 
 /** sRGB byte → linear, as three.js expects vertex colours. */
 const LINEAR = Float32Array.from({ length: 256 }, (_, v) => {
@@ -37,6 +39,8 @@ export class PreviewScene {
   private mapSize = 0;
   private dirty = true;
   private frameCount = 0;
+  /** The user has turned or zoomed the view, so a resize keeps their camera. */
+  private userMoved = false;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -61,6 +65,7 @@ export class PreviewScene {
     this.controls.screenSpacePanning = false;
     this.controls.maxPolarAngle = Math.PI * 0.49;
     this.controls.zoomToCursor = true;
+    this.controls.addEventListener('start', () => (this.userMoved = true));
 
     this.resize = new ResizeObserver(() => this.fit());
     this.resize.observe(canvas.parentElement ?? canvas);
@@ -88,6 +93,8 @@ export class PreviewScene {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    // Switching between 3D and Split changes the shape of the view: keep the map in frame.
+    if (!this.userMoved) this.resetCamera();
     this.dirty = true;
   }
 
@@ -115,25 +122,51 @@ export class PreviewScene {
     this.build(preview, first);
   }
 
-  /** Looks at the whole map from the south-east. */
+  /** Looks at the whole map from the south-east, as close as fits the view. */
   resetCamera(): void {
     const p = this.preview;
     if (!p) return;
     const size = p.size;
-    const centreY = this.groundY(p, p.res >> 1, p.res >> 1);
-    // Far enough that the map fits the narrower of the two view angles.
-    const vfov = THREE.MathUtils.degToRad(this.camera.fov);
-    const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);
-    const distance = (size * 0.62) / Math.sin(Math.min(vfov, hfov) / 2);
+    const half = size / 2;
+    let top = 0;
+    for (const h of p.heights) top = Math.max(top, h);
+    const tall = (top - this.base(p)) * this.options.exaggeration;
     const dir = new THREE.Vector3(0.45, 0.62, 0.65).normalize();
-    this.controls.target.set(0, centreY, 0);
-    this.camera.position.copy(dir.multiplyScalar(distance)).add(this.controls.target);
+    this.controls.target.set(0, tall / 2, 0);
     this.camera.near = Math.max(0.5, size / 2000);
+    this.camera.far = size * 20;
+
+    // The nearest distance at which every corner of the block (peaks included) lands inside the
+    // view with a small margin. Perspective makes near corners loom, so it is searched for.
+    const corners = [-half, half].flatMap((x) =>
+      [-half, half].flatMap((z) => [0, tall].map((y) => new THREE.Vector3(x, y, z))),
+    );
+    const fits = (distance: number) => {
+      this.camera.position.copy(dir).multiplyScalar(distance).add(this.controls.target);
+      this.camera.lookAt(this.controls.target);
+      this.camera.updateMatrixWorld();
+      this.camera.updateProjectionMatrix();
+      const v = new THREE.Vector3();
+      return corners.every((c) => {
+        v.copy(c).project(this.camera);
+        return Math.abs(v.x) <= 0.92 && Math.abs(v.y) <= 0.9 && v.z < 1;
+      });
+    };
+    let near = size * 0.3;
+    let far = size * 12;
+    for (let k = 0; k < 24; k++) {
+      const mid = (near + far) / 2;
+      if (fits(mid)) far = mid;
+      else near = mid;
+    }
+    const distance = far;
+    this.camera.position.copy(dir).multiplyScalar(distance).add(this.controls.target);
     this.camera.far = distance + size * 8;
     this.camera.updateProjectionMatrix();
     this.controls.minDistance = 8;
     this.controls.maxDistance = Math.max(distance * 1.5, size * 3);
     this.controls.update();
+    this.userMoved = false;
     this.dirty = true;
   }
 
@@ -141,10 +174,6 @@ export class PreviewScene {
     let min = Infinity;
     for (const h of p.heights) min = Math.min(min, h);
     return Math.floor(min) - 2;
-  }
-
-  private groundY(p: PreviewData, i: number, j: number): number {
-    return (p.heights[j * p.res + i] - this.base(p)) * this.options.exaggeration;
   }
 
   private clear(): void {
@@ -348,13 +377,16 @@ export class PreviewScene {
 
   private addTrees(p: PreviewData, base: number, ex: number): void {
     if (p.treeCount === 0) return;
-    const every = Math.max(1, Math.ceil(p.treeCount / MAX_TREES));
+    const drawn = Math.min(p.treeCount, MAX_TREES);
+    const pick = (k: number) => Math.floor((k * p.treeCount) / drawn);
+    const dense = drawn > DENSE_TREES;
     const half = p.size / 2;
-    const trunkGeo = new THREE.CylinderGeometry(0.35, 0.5, 1, 6).translate(0, 0.5, 0);
-    const roundGeo = new THREE.IcosahedronGeometry(1, 1);
-    const coneGeo = new THREE.ConeGeometry(1, 1, 7).translate(0, 0.5, 0);
+    const trunkGeo = new THREE.CylinderGeometry(0.35, 0.5, 1, dense ? 4 : 6, 1, dense).translate(0, 0.5, 0);
+    const roundGeo = new THREE.IcosahedronGeometry(1, dense ? 0 : 1);
+    const coneGeo = new THREE.ConeGeometry(1, 1, dense ? 5 : 7, 1, dense).translate(0, 0.5, 0);
     const count = { trunk: 0, round: 0, cone: 0 };
-    for (let t = 0; t < p.treeCount; t += every) {
+    for (let k = 0; k < drawn; k++) {
+      const t = pick(k);
       const style = speciesStyle(p.species[p.trees[6 * t + 5]] ?? '');
       if (style.crown !== 'bush') count.trunk++;
       if (style.crown === 'cone') count.cone++;
@@ -370,8 +402,8 @@ export class PreviewScene {
     const scale = new THREE.Vector3();
     const c = new THREE.Color();
     const at = { trunk: 0, round: 0, cone: 0 };
-    for (let t = 0; t < p.treeCount; t += every) {
-      const o = 6 * t;
+    for (let k = 0; k < drawn; k++) {
+      const o = 6 * pick(k);
       const x = p.trees[o] - half;
       const y = (p.trees[o + 1] - base) * ex;
       const z = p.trees[o + 2] - half;

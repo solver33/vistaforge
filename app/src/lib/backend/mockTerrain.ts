@@ -342,6 +342,7 @@ export function mockPreview(settings: WorldSettings, res: number, biomeIds: stri
     biomeIds: usedIds,
     trees: new Float32Array(out),
     treeCount: out.length / 6,
+    totalTrees: out.length / 6,
     species: speciesIds,
   };
 }

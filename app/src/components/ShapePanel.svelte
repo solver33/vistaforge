@@ -10,7 +10,7 @@
 <Section title="Terrain & life">
   <div data-testid="sliders">
     {#each groups as g (g.title)}
-      <div class="group">
+      <div class="group" data-group={g.title}>
         <div class="gtitle faint">{g.title}</div>
         {#each g.sliders as s (s.key)}
           <Range

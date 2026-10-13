@@ -123,5 +123,7 @@ export interface PreviewData {
   /** 6 floats per tree: x, y, z, height, crown, species index into `species`. */
   trees: Float32Array;
   treeCount: number;
+  /** Trees on the whole map; more than `treeCount` when the bridge thinned a dense forest. */
+  totalTrees: number;
   species: SpeciesId[];
 }

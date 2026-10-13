@@ -75,6 +75,8 @@ const NORMAL: Sliders = {
   detail: 0.5,
   biome_blend: 0.5,
   biome_scale: 0.5,
+  sea: 0,
+  islands: 0.5,
 };
 
 function preset(

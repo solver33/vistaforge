@@ -6,13 +6,19 @@
 </script>
 
 <footer class="status">
-  <span class="left" data-testid="preview-status">
+  <span
+    class="left"
+    data-testid="preview-status"
+    title={app.preview && app.preview.totalTrees > app.preview.treeCount
+      ? `The preview draws ${formatInt(app.preview.treeCount)} of them, spread evenly`
+      : undefined}
+  >
     {#if app.previewBusy}
       <span class="spinner"></span> Updating preview…
     {:else if app.previewError}
       <span class="error-text">{app.previewError}</span>
     {:else if app.preview}
-      Preview {app.preview.res}×{app.preview.res} in {Math.round(app.previewMs)} ms · {formatInt(app.preview.treeCount)} trees
+      Preview {app.preview.res}×{app.preview.res} in {Math.round(app.previewMs)} ms · {formatInt(app.preview.totalTrees)} trees
     {:else}
       No preview yet
     {/if}

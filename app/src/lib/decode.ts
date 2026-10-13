@@ -9,6 +9,8 @@ interface Header {
   res: number;
   step: number;
   trees: number;
+  /** Present when the bridge packed only some of the trees. */
+  total_trees?: number;
   biomes: string[];
   species: string[];
 }
@@ -56,6 +58,7 @@ export function decodePreview(data: ArrayBuffer | Uint8Array): PreviewData {
     biomeIds: header.biomes,
     trees,
     treeCount: header.trees,
+    totalTrees: header.total_trees ?? header.trees,
     species: header.species,
   };
 }
@@ -67,6 +70,7 @@ export function encodePreview(p: PreviewData): ArrayBuffer {
     res: p.res,
     step: p.step,
     trees: p.treeCount,
+    ...(p.totalTrees > p.treeCount ? { total_trees: p.totalTrees } : {}),
     biomes: p.biomeIds,
     species: p.species,
   });
