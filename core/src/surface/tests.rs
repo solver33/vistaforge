@@ -146,6 +146,7 @@ pub(crate) fn synth_column(seed: u64, x: i32, z: i32) -> ColumnInfo {
             0.0
         },
         flow: 0.0,
+        fall: None,
     }
 }
 

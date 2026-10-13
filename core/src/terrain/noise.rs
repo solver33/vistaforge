@@ -107,6 +107,57 @@ pub fn perlin1(seed: u64, t: f64) -> f64 {
     (g(0) + u * (g(1) - g(0))) * 2.0
 }
 
+/// A cosine wave of period 1 made of parabolas (much cheaper, and as smooth as the eye
+/// needs): the value and its derivative.
+#[inline]
+fn wave(t: f64) -> (f64, f64) {
+    let u = t - (t + 0.5).floor();
+    let a = u.abs();
+    if a <= 0.25 {
+        (1.0 - 16.0 * a * a, -32.0 * u)
+    } else {
+        let b = a - 0.5;
+        (16.0 * b * b - 1.0, 32.0 * b * u.signum())
+    }
+}
+
+/// One octave of an erosion filter: stripes that run along `(gx, gz)` (down the slope),
+/// broken into short strokes around jittered points so they wander and fork. `(x, z)` is in
+/// units of the stripe spacing. Returns the value (about -1..1) and its derivative.
+pub fn gully(seed: u64, x: f64, z: f64, gx: f64, gz: f64) -> (f64, f64, f64) {
+    let len = gx.hypot(gz);
+    if len < 1e-9 {
+        return (0.0, 0.0, 0.0);
+    }
+    // Across the slope: the stripes' phase changes this way.
+    let (nx, nz) = (-gz / len, gx / len);
+    let (ix, iz) = (x.floor() as i64, z.floor() as i64);
+    let (fx, fz) = (x - ix as f64, z - iz as f64);
+    let (mut v, mut dx, mut dz, mut wt) = (0.0, 0.0, 0.0, 0.0);
+    for oz in -1..=1 {
+        for ox in -1..=1 {
+            let h = hash2(seed, ix + ox, iz + oz);
+            let jx = (h & 0xFFFF) as f64 / 65536.0;
+            let jz = ((h >> 16) & 0xFFFF) as f64 / 65536.0;
+            let (px, pz) = (fx - ox as f64 - jx, fz - oz as f64 - jz);
+            let d2 = px * px + pz * pz;
+            if d2 >= 2.25 {
+                continue;
+            }
+            let w = (1.0 - d2 / 2.25).powi(3);
+            let (c, dc) = wave(px * nx + pz * nz);
+            v += w * c;
+            dx += w * dc * nx;
+            dz += w * dc * nz;
+            wt += w;
+        }
+    }
+    if wt <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    (v / wt, dx / wt, dz / wt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

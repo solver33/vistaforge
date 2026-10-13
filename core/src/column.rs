@@ -97,6 +97,11 @@ pub struct ColumnInfo {
     pub rock: f32,
     /// 0 .. 1: water flow from erosion (gullies, stream beds, scree runs).
     pub flow: f32,
+    /// Waterfall: the Y of the topmost block of a curtain of falling water standing on this
+    /// column's water, which fills `water_level + 1 ..= fall`. Set on river columns at the
+    /// foot of a drop; the water above the lip is at `fall` in the column upstream.
+    #[serde(default)]
+    pub fall: Option<i32>,
 }
 
 impl ColumnInfo {
@@ -112,6 +117,7 @@ impl ColumnInfo {
             moisture: 0.5,
             rock: 0.0,
             flow: 0.0,
+            fall: None,
         }
     }
 

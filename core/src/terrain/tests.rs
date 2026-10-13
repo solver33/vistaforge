@@ -401,3 +401,146 @@ fn timing() {
         }
     }
 }
+
+/// Dry ground that water levels raised above the natural ground, for every preset: walls
+/// holding rivers ("aqueducts") and lakes on slopes (run with --release --ignored
+/// --nocapture). With VF_RENDER set, also writes a map with the raised columns in red.
+#[test]
+#[ignore]
+fn wall_stats() {
+    let size: u32 = std::env::var("VF_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(512);
+    let only = std::env::var("VF_ONLY").ok();
+    let dir = std::env::var("VF_RENDER").ok();
+    if let Some(d) = &dir {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    for p in presets::all() {
+        if only
+            .as_ref()
+            .is_some_and(|o| !o.split(',').any(|x| x == p.id))
+        {
+            continue;
+        }
+        let t = Terrain::new(&p.settings("t", size, 7), Quality::Full).unwrap();
+        let n = size as i32;
+        // Per kind (river, lake, sea, wetland): columns raised by 2+, 4+ and 8+ blocks.
+        let mut counts = [[0usize; 3]; 4];
+        let mut worst = [0f32; 4];
+        let mut raised = vec![0f32; (n * n) as usize];
+        let (mut falls, mut drop) = (0, 0);
+        for z in 0..n {
+            for x in 0..n {
+                let s = t.sample(x, z);
+                if let (Some(f), Some(l)) = (s.fall, s.level) {
+                    falls += 1;
+                    drop = drop.max(f - l);
+                    raised[(z * n + x) as usize] = -1.0;
+                }
+                if s.water != WaterKind::None {
+                    continue;
+                }
+                let (fx, fz) = (x as f64, z as f64);
+                let swampy = t.swamp.bilinear(fx, fz);
+                let base = t.natural(fx, fz, swampy)
+                    + t.rough.bilinear(fx, fz) * t.detail_amp * t.micro(fx, fz);
+                let r = s.h - base as f32;
+                if r < 2.0 {
+                    continue;
+                }
+                raised[(z * n + x) as usize] = r;
+                let kind = if t.rivers.at(fx, fz).is_some_and(|c| c.bank.is_some()) {
+                    0
+                } else if t.lake_rim(fx, fz).is_some() {
+                    1
+                } else if t.standing_water(fx, fz).1 > 0.0 {
+                    2
+                } else {
+                    3
+                };
+                for (i, lim) in [2.0, 4.0, 8.0].iter().enumerate() {
+                    if r >= *lim {
+                        counts[kind][i] += 1;
+                    }
+                }
+                worst[kind] = worst[kind].max(r);
+            }
+        }
+        let line: Vec<String> = ["river", "lake", "sea", "wet"]
+            .iter()
+            .enumerate()
+            .map(|(k, name)| {
+                let c = counts[k];
+                format!(
+                    "{name} {:6}/{:5}/{:4} max {:5.1}",
+                    c[0], c[1], c[2], worst[k]
+                )
+            })
+            .collect();
+        println!(
+            "{:22} {}  falls {falls:5} max {drop:3}",
+            p.id,
+            line.join("  ")
+        );
+        if let Some(dir) = &dir {
+            let step = (size / 1024).max(1) as i32;
+            let (res, mut px) = render(&t, step);
+            for j in 0..res as i32 {
+                for i in 0..res as i32 {
+                    let r = raised[(j * step * n + i * step) as usize];
+                    if r < 0.0 {
+                        px[(j * res as i32 + i) as usize] = [255, 0, 255];
+                    } else if r >= 2.0 {
+                        let c = &mut px[(j * res as i32 + i) as usize];
+                        let a = (r / 8.0).min(1.0);
+                        c[0] = 255;
+                        c[1] = (c[1] as f32 * (1.0 - a)) as u8;
+                        c[2] = (c[2] as f32 * (1.0 - a)) as u8;
+                    }
+                }
+            }
+            let path = format!("{dir}/{}-walls.png", p.id);
+            std::fs::write(&path, crate::png::encode_rgb(res, res, &px).unwrap()).unwrap();
+        }
+    }
+}
+
+/// Dumps a square of columns for a 3D look (run with --release --ignored --nocapture):
+/// VF_ONLY (one preset), VF_SIZE, VF_X0, VF_Z0, VF_W, VF_OUT. Each column is height (f32),
+/// water level and fall top (i32, -9999 when none) and r, g, b (u8), little-endian.
+#[test]
+#[ignore]
+fn dump_columns() {
+    let id = std::env::var("VF_ONLY").unwrap();
+    let size: u32 = std::env::var("VF_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1024);
+    let var = |k: &str| std::env::var(k).unwrap().parse::<i32>().unwrap();
+    let (x0, z0, w) = (var("VF_X0"), var("VF_Z0"), var("VF_W"));
+    let mut s = presets::find(&id).unwrap().settings("t", size, 7);
+    if std::env::var("VF_TALL").is_ok() {
+        s.world_height = crate::settings::WorldHeight::Tall;
+    }
+    let t = Terrain::new(&s, Quality::Full).unwrap();
+    let g = t.grid(Rect::new(x0, z0, x0 + w, z0 + w));
+    let mut out = Vec::new();
+    for z in z0..z0 + w {
+        for x in x0..x0 + w {
+            let c = g.get(x, z);
+            out.extend_from_slice(&c.height.to_le_bytes());
+            out.extend_from_slice(&c.water_level.unwrap_or(-9999).to_le_bytes());
+            out.extend_from_slice(&c.fall.unwrap_or(-9999).to_le_bytes());
+            let mut rgb = biome_rgb(c.biome);
+            let o = biome_rgb(c.biome2);
+            for q in 0..3 {
+                rgb[q] = rgb[q] * (1.0 - c.blend) + o[q] * c.blend;
+                rgb[q] = rgb[q] * (1.0 - c.rock * 0.8) + 118.0 * c.rock * 0.8;
+            }
+            out.extend(rgb.map(|v| v.clamp(0.0, 255.0) as u8));
+        }
+    }
+    std::fs::write(std::env::var("VF_OUT").unwrap(), out).unwrap();
+}
