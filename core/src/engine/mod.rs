@@ -133,7 +133,10 @@ impl<'c> Generator<'c> {
         };
         // Only trees standing on the map: one just outside would show as half a crown.
         let map = Rect::square(self.size());
-        let planned: Vec<_> = self.decor.plan_trees(buffer.intersect(&map), &column);
+        let mut planned: Vec<_> = self.decor.plan_trees(buffer.intersect(&map), &column);
+        // Overlapping crowns: the later tree wins a shared cell. Every piece that holds a column
+        // holds all trees reaching it, so a fixed order makes the result the same everywhere.
+        planned.sort_by_key(|t| (t.x, t.z, t.seed));
         for tree in &planned {
             self.trees.build(tree, &mut area);
         }
