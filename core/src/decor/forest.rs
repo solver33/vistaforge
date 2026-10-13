@@ -19,8 +19,8 @@ use crate::trees::{Species, TreeRequest};
 pub(crate) const CELL: i32 = 4;
 /// Trunks are never closer than √12 ≈ 3.5 blocks.
 const SPACING2: i32 = 12;
-/// Share of candidates that survive the spacing rule, on average; densities are divided by it
-/// so they read as a share of the densest possible forest.
+/// Share of candidates that survive the spacing rule, on average. Densities are divided by it,
+/// so a density is the share of cells that hold a tree, and this is the densest forest there is.
 const SURVIVAL: f32 = 0.48;
 
 const SALT: u64 = 0x7EE5_0000;
@@ -59,7 +59,8 @@ fn spaced(seed: u64, gx: i32, gz: i32, c: Candidate) -> bool {
 }
 
 struct Stand {
-    /// Density on open land and in groves, as a share of the densest forest.
+    /// Density on open land and in groves: the share of cells that hold a tree, at most
+    /// [`SURVIVAL`] at the default trees slider.
     open: f32,
     grove: f32,
     species: &'static [(Species, u32)],
@@ -82,28 +83,28 @@ fn stand(biome: Biome) -> Stand {
         Biome::Meadow => s(0.008, 0.45, &[(Oak, 4), (Birch, 3), (Bush, 3)], 0.65, 0.45),
         Biome::Forest => s(
             0.06,
-            0.62,
+            0.38,
             &[(Oak, 10), (Birch, 3), (Bush, 2), (Dead, 1)],
             0.6,
             0.55,
         ),
         Biome::BirchForest => s(
             0.06,
-            0.7,
+            0.4,
             &[(Birch, 10), (Oak, 2), (Bush, 1), (Dead, 1)],
             0.55,
             0.5,
         ),
         Biome::Taiga => s(
             0.08,
-            0.75,
+            0.42,
             &[(Spruce, 10), (Pine, 2), (Birch, 2), (Dead, 1)],
             0.55,
             0.55,
         ),
         Biome::PineForest => s(
             0.06,
-            0.5,
+            0.3,
             &[(Pine, 10), (Spruce, 2), (Birch, 1), (Dead, 1)],
             0.6,
             0.55,
@@ -226,7 +227,7 @@ impl Forest {
         let size = match species {
             Species::Bush => 0.2 + 0.3 * hash_unit(hash64(c.h ^ 0x53)),
             _ if ancient => 0.9 + 0.1 * hash_unit(hash64(c.h ^ 0x53)),
-            _ => (typical + 0.45 * jitter).clamp(0.15, 0.95),
+            _ => (typical + 0.35 * jitter).clamp(0.15, 0.95),
         };
         let (y, _) = col.ground();
         Some(TreeRequest {

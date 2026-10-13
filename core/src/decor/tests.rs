@@ -80,8 +80,8 @@ fn every_plant_is_in_the_catalog() {
     assert!(w.decor.rubble.iter().all(|r| !r.is_empty()));
 }
 
-/// Overlapping pieces agree on every block in every biome: plants, rocks, logs and boulders
-/// come out the same whichever piece builds them.
+/// Overlapping pieces agree on every block in every biome: trees, plants, rocks, logs and
+/// boulders come out the same whichever piece builds them.
 #[test]
 fn pieces_agree_in_every_biome() {
     let Some(catalog) = catalog() else {
@@ -95,8 +95,8 @@ fn pieces_agree_in_every_biome() {
             let (x0, z0) = (rx * REGION + 10, rz * REGION + 10);
             let a = Rect::new(x0, z0, x0 + 64, z0 + 64);
             let b = Rect::new(x0 + 23, z0 + 37, x0 + 87, z0 + 101);
-            let (pa, _) = w.piece(a, false, true);
-            let (pb, _) = w.piece(b, false, true);
+            let (pa, _) = w.piece(a, true, true);
+            let (pb, _) = w.piece(b, true, true);
             let shared = a.intersect(&b);
             for (x, z) in shared.columns() {
                 assert_eq!(
@@ -128,12 +128,18 @@ fn every_biome_is_detailed() {
             let (full, _) = w.piece(rect, true, true);
             let mut changed = 0;
             let mut names = std::collections::HashMap::<String, usize>::new();
-            let mut dry = 0;
+            let (mut dry, mut open) = (0, 0);
             for (x, z) in rect.columns() {
-                if !grid.get(x, z).is_wet() {
-                    dry += 1;
-                }
                 let (a, b) = (bare.column(x, z), full.column(x, z));
+                let col = grid.get(x, z);
+                if !col.is_wet() {
+                    dry += 1;
+                    // Trunks and low branches take some of the floor; decor goes on the rest.
+                    let (y, _) = col.ground();
+                    if a[(y + 1 - crate::world::MIN_Y) as usize] == crate::sink::AIR {
+                        open += 1;
+                    }
+                }
                 for (&p, &q) in a.iter().zip(b) {
                     if p != q {
                         changed += 1;
@@ -150,7 +156,7 @@ fn every_biome_is_detailed() {
                 .map(|(n, c)| format!("{}×{c}", n.trim_start_matches("conquest:")))
                 .collect();
             eprintln!(
-                "{biome:?}: {changed} decor blocks over {dry} dry columns, {} kinds: {}",
+                "{biome:?}: {changed} decor blocks over {dry} dry columns ({open} open), {} kinds: {}",
                 names.len(),
                 top.join(" ")
             );
