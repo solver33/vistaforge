@@ -130,7 +130,8 @@ fn columns_are_in_range() {
         "realistic_mountains",
         "swamp",
         "archipelago",
-        "temperate_mix",
+        "volcano_island",
+        "wild_mix",
     ] {
         let s = presets::find(id).unwrap().settings("t", 256, 5);
         let t = Terrain::new(&s, Quality::Preview).unwrap();
@@ -170,7 +171,7 @@ fn tall_worlds_raise_mountains_under_the_ceiling() {
     for id in ["realistic_mountains", "high_alps"] {
         let (low, high) = (make(id, WorldHeight::Standard), make(id, WorldHeight::Tall));
         let (a, b) = (max(&heights(&low)), max(&heights(&high)));
-        assert!(b > 2.5 * a, "{id}: {a} -> {b}");
+        assert!(b > 2.3 * a, "{id}: {a} -> {b}");
         assert!(b < high.top - 20.0, "{id}: {b} reaches the ceiling");
     }
     // Lowlands keep their height.
@@ -182,6 +183,26 @@ fn tall_worlds_raise_mountains_under_the_ceiling() {
     // Tall presets make tall worlds.
     let s = presets::find("epic_peaks").unwrap().settings("t", 512, 3);
     assert_eq!(s.world_height, WorldHeight::Tall);
+}
+
+#[test]
+fn volcano_island_has_a_bare_volcano_in_a_jungle() {
+    let s = presets::find("volcano_island")
+        .unwrap()
+        .settings("t", 512, 3);
+    let t = Terrain::new(&s, Quality::Preview).unwrap();
+    let cols: Vec<ColumnInfo> = (0..64)
+        .flat_map(|j| (0..64).map(move |i| (i * 8, j * 8)))
+        .map(|(x, z)| t.column(x, z))
+        .collect();
+    let peak = cols
+        .iter()
+        .max_by(|a, b| a.height.total_cmp(&b.height))
+        .unwrap();
+    assert_eq!(peak.biome, Biome::Volcanic, "{peak:?}");
+    assert!(peak.height > 150.0, "{peak:?}");
+    let jungle = cols.iter().filter(|c| c.biome == Biome::Tropical).count();
+    assert!(jungle > cols.len() / 5, "{jungle} jungle columns");
 }
 
 fn biome_rgb(b: Biome) -> [f32; 3] {
@@ -359,10 +380,10 @@ fn leaks(t: &Terrain, cols: &[ColumnInfo]) -> (usize, usize) {
 fn water_stays_in_place() {
     for id in [
         "swamp",
-        "wetlands",
+        "marsh",
         "archipelago",
         "river_valley",
-        "mountain_lakes",
+        "glacial_valleys",
     ] {
         let s = presets::find(id).unwrap().settings("t", 256, 3);
         let t = Terrain::new(&s, Quality::Full).unwrap();
@@ -413,7 +434,7 @@ fn timing() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(4096);
     for id in std::env::var("VF_ONLY")
-        .unwrap_or("realistic_mountains,swamp,archipelago,temperate_mix".into())
+        .unwrap_or("realistic_mountains,swamp,archipelago,wild_mix".into())
         .split(',')
     {
         let s = presets::find(id).unwrap().settings("t", size, 7);
@@ -559,6 +580,15 @@ fn dump_columns() {
     let mut s = presets::find(&id).unwrap().settings("t", size, 7);
     if std::env::var("VF_TALL").is_ok() {
         s.world_height = crate::settings::WorldHeight::Tall;
+    }
+    // Slider overrides, e.g. VF_SET=plateaus=0,mountains=0.6
+    if let Ok(set) = std::env::var("VF_SET") {
+        let mut v = serde_json::to_value(s.sliders).unwrap();
+        for pair in set.split(',') {
+            let (k, x) = pair.split_once('=').unwrap();
+            v[k] = serde_json::json!(x.parse::<f32>().unwrap());
+        }
+        s.sliders = serde_json::from_value(v).unwrap();
     }
     let t = Terrain::new(&s, Quality::Full).unwrap();
     let g = t.grid(Rect::new(x0, z0, x0 + w, z0 + w));

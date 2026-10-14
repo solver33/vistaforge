@@ -226,6 +226,7 @@ pub fn breach(
         }
     }
     let mut changed = false;
+    let mut search = Search::new(h.len());
     for (l, nodes) in members.iter().enumerate() {
         if nodes.iter().any(|&k| keep[k as usize]) {
             continue;
@@ -260,56 +261,129 @@ pub fn breach(
             .iter()
             .min_by(|&&a, &&b| h[a as usize].total_cmp(&h[b as usize]))
             .unwrap() as usize;
-        // The path that climbs least (lowest saddles first), like water finding its way.
-        let mut path: Vec<usize> = Vec::new();
-        let mut prev = std::collections::HashMap::from([(deepest, deepest)]);
-        let mut heap = BinaryHeap::from([Reverse((key(h[deepest]), deepest))]);
-        while let Some(Reverse((_, c))) = heap.pop() {
-            if c == k {
-                break;
-            }
-            let (i, j) = ((c % n) as i32, (c / n) as i32);
-            for &(di, dj, _) in &NEIGHBOURS {
-                let (a, b) = (i + di, j + dj);
-                if a < 0 || b < 0 || a >= n as i32 || b >= n as i32 {
-                    continue;
-                }
-                let m = b as usize * n + a as usize;
-                if (water.lake[m] == l as u32 || m == k) && !prev.contains_key(&m) {
-                    prev.insert(m, c);
-                    heap.push(Reverse((key(h[m]), m)));
-                }
-            }
-        }
-        if prev.contains_key(&k) {
-            let mut c = prev[&k];
-            while c != deepest {
-                path.push(c);
-                c = prev[&c];
-            }
-        }
-        for c in path {
+        // Cut a channel across the lake bed from its deepest point to the spill, and on down
+        // the outflow until the water downstream is lower anyway (through any hollows on the
+        // way, so they cannot hold the lake up). Both follow the path that needs the least
+        // cut, so the channel keeps to the low ground the way the river will once the lake
+        // has drained, rather than running straight across filled flats.
+        let bed = search.least_cut(
+            h,
+            n,
+            deepest,
+            target,
+            |m| water.lake[m] == l as u32 || m == k,
+            |m| m == k,
+        );
+        for &c in &bed {
             if h[c] > target {
                 h[c] = target;
                 changed = true;
             }
         }
-        // Cut down along the outflow until the water downstream is lower anyway (through
-        // any hollows on the way, so they cannot hold the lake up).
+        // The lake's water can only leave over ground whose filled level is not above its own.
+        let top = flood.filled[k] + 0.01;
+        let out = search.least_cut(
+            h,
+            n,
+            k,
+            target,
+            |m| water.lake[m] != l as u32 && flood.filled[m] <= top,
+            |m| flood.filled[m] < target,
+        );
         let mut allowed = target;
-        while flood.filled[k] > allowed {
-            if h[k] > allowed {
-                h[k] = allowed;
-                changed = true;
+        for c in out {
+            if flood.filled[c] <= allowed {
+                break;
             }
-            match flood.recv[k] {
-                NONE => break,
-                r => k = r as usize,
+            if h[c] > allowed {
+                h[c] = allowed;
+                changed = true;
             }
             allowed -= 0.04 * cell;
         }
     }
     changed
+}
+
+/// Scratch space for [`least_cut`], reused between calls.
+struct Search {
+    cost: Vec<f32>,
+    prev: Vec<u32>,
+    touched: Vec<u32>,
+}
+
+impl Search {
+    fn new(len: usize) -> Self {
+        Self {
+            cost: vec![f32::INFINITY; len],
+            prev: vec![NONE; len],
+            touched: Vec::new(),
+        }
+    }
+
+    /// The path from `from` to the first node where `end` holds, through nodes where `open`
+    /// holds, that needs the least cutting down to `level` (with a little weight on
+    /// length). Nodes in order from `from`; empty when no such node is reachable.
+    fn least_cut(
+        &mut self,
+        h: &[f32],
+        n: usize,
+        from: usize,
+        level: f32,
+        open: impl Fn(usize) -> bool,
+        end: impl Fn(usize) -> bool,
+    ) -> Vec<usize> {
+        for &t in &self.touched {
+            self.cost[t as usize] = f32::INFINITY;
+            self.prev[t as usize] = NONE;
+        }
+        self.touched.clear();
+        self.cost[from] = 0.0;
+        self.touched.push(from as u32);
+        let mut heap = BinaryHeap::from([Reverse((key(0.0), from))]);
+        let mut found = None;
+        while let Some(Reverse((c_key, c))) = heap.pop() {
+            let here = self.cost[c];
+            if key(here) != c_key {
+                continue;
+            }
+            if c != from && end(c) {
+                found = Some(c);
+                break;
+            }
+            let (i, j) = ((c % n) as i32, (c / n) as i32);
+            for &(di, dj, dist) in &NEIGHBOURS {
+                let (a, b) = (i + di, j + dj);
+                if a < 0 || b < 0 || a >= n as i32 || b >= n as i32 {
+                    continue;
+                }
+                let m = b as usize * n + a as usize;
+                if !open(m) {
+                    continue;
+                }
+                let next = here + (h[m] - level).max(0.0) + 0.05 * dist;
+                if next < self.cost[m] {
+                    if self.cost[m] == f32::INFINITY {
+                        self.touched.push(m as u32);
+                    }
+                    self.cost[m] = next;
+                    self.prev[m] = c as u32;
+                    heap.push(Reverse((key(next), m)));
+                }
+            }
+        }
+        let mut path = Vec::new();
+        let Some(mut c) = found else {
+            return path;
+        };
+        while c != from {
+            path.push(c);
+            c = self.prev[c] as usize;
+        }
+        path.push(from);
+        path.reverse();
+        path
+    }
 }
 
 /// Widens lake (and sea) masks by up to `rings` nodes onto shore nodes that are less than

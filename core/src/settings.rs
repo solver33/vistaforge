@@ -144,6 +144,10 @@ pub struct Sliders {
     pub sea: f32,
     /// Shape of the sea: 0 a coast along one side, 0.5 one large island, 1 an archipelago.
     pub islands: f32,
+    /// Map-scale steps: broad plateaus at different heights on escarpments (0 = none).
+    pub plateaus: f32,
+    /// Volcanoes with craters (0 = none; more and bigger towards 1).
+    pub volcanoes: f32,
 }
 
 impl Default for Sliders {
@@ -162,6 +166,8 @@ impl Default for Sliders {
             biome_scale: 0.5,
             sea: 0.0,
             islands: 0.5,
+            plateaus: 0.0,
+            volcanoes: 0.0,
         }
     }
 }

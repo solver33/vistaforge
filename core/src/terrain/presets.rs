@@ -58,16 +58,6 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
-            "meadow",
-            "Meadow",
-            "Rolling flower meadows with copses of trees.",
-            &[(Meadow, 0.8), (Plains, 0.2)],
-            |s| {
-                s.trees = 0.3;
-                s.vegetation = 0.8;
-            },
-        ),
-        preset(
             "flatlands",
             "Flatlands",
             "Almost flat open country, good for building, with shallow streams.",
@@ -136,20 +126,6 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
-            "mixed_woodland",
-            "Mixed woodland",
-            "Oak and birch woods broken by meadows and fields.",
-            &[
-                (Forest, 0.45),
-                (BirchForest, 0.3),
-                (Meadow, 0.15),
-                (Plains, 0.1),
-            ],
-            |s| {
-                s.trees = 0.65;
-            },
-        ),
-        preset(
             "old_growth_forest",
             "Old-growth forest",
             "Deep, dense forest of oak, spruce and birch over rough ground.",
@@ -158,30 +134,6 @@ pub fn all() -> Vec<Preset> {
                 s.trees = 0.95;
                 s.detail = 0.8;
                 s.roughness = 0.65;
-            },
-        ),
-        preset(
-            "forest_lakes",
-            "Forest lakes",
-            "Woodland dotted with lakes and ponds joined by streams.",
-            &[
-                (Forest, 0.5),
-                (BirchForest, 0.2),
-                (Taiga, 0.1),
-                (Meadow, 0.2),
-            ],
-            |s| {
-                s.water = 0.85;
-                s.trees = 0.65;
-            },
-        ),
-        preset(
-            "birch_hills",
-            "Birch hills",
-            "Birch-covered hills and flowery valleys.",
-            &[(BirchForest, 0.6), (Meadow, 0.4)],
-            |s| {
-                s.relief = 0.65;
             },
         ),
         // Northern.
@@ -205,21 +157,6 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
-            "northern_taiga",
-            "Northern taiga",
-            "Endless spruce and pine with bogs, lakes and bare hilltops.",
-            &[
-                (Taiga, 0.55),
-                (PineForest, 0.2),
-                (Marsh, 0.12),
-                (Highlands, 0.13),
-            ],
-            |s| {
-                s.water = 0.7;
-                s.trees = 0.7;
-            },
-        ),
-        preset(
             "boreal_lakes",
             "Boreal lakes",
             "Glacier-scoured land of countless lakes between spruce ridges.",
@@ -235,14 +172,63 @@ pub fn all() -> Vec<Preset> {
                 s.erosion = 0.65;
             },
         ),
+        // Winter.
         preset(
-            "pine_highlands",
-            "Pine highlands",
-            "Rugged uplands with pine woods and rocky outcrops.",
-            &[(PineForest, 0.5), (Highlands, 0.5)],
+            "snowy_taiga",
+            "Snowy taiga",
+            "Spruce forest under deep snow on hills, with frozen lakes and rivers.",
+            &[(SnowyTaiga, 0.75), (Tundra, 0.1), (Taiga, 0.15)],
             |s| {
-                s.relief = 0.65;
-                s.roughness = 0.65;
+                s.relief = 0.55;
+                s.trees = 0.7;
+                s.water = 0.6;
+            },
+        ),
+        preset(
+            "frozen_tundra",
+            "Frozen tundra",
+            "Wide treeless snowy plains with countless frozen ponds and a few lone spruces.",
+            &[(Tundra, 0.8), (SnowyTaiga, 0.2)],
+            |s| {
+                s.relief = 0.25;
+                s.water = 0.8;
+                s.rivers = 0.5;
+                s.trees = 0.15;
+                s.erosion = 0.4;
+            },
+        ),
+        preset(
+            "winter_mountains",
+            "Winter mountains",
+            "Snowbound ranges above valleys of snowy spruce forest.",
+            &[
+                (SnowyTaiga, 0.35),
+                (Tundra, 0.1),
+                (Mountains, 0.25),
+                (SnowyPeaks, 0.3),
+            ],
+            |s| {
+                s.relief = 0.7;
+                s.mountains = 0.8;
+                s.erosion = 0.8;
+                s.trees = 0.55;
+            },
+        ),
+        preset(
+            "frozen_coast",
+            "Frozen coast",
+            "An arctic shore of snowy tundra, spruce and rocky skerries in a cold sea.",
+            &[
+                (Tundra, 0.4),
+                (SnowyTaiga, 0.35),
+                (Mountains, 0.1),
+                (SnowyPeaks, 0.15),
+            ],
+            |s| {
+                s.sea = 0.4;
+                s.islands = 0.85;
+                s.mountains = 0.35;
+                s.trees = 0.35;
             },
         ),
         // Wetlands.
@@ -271,26 +257,6 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
-            "wetlands",
-            "Wetlands",
-            "A patchwork of marsh, swamp forest and wet meadow around slow rivers.",
-            &[(Marsh, 0.35), (Swamp, 0.3), (Meadow, 0.2), (Forest, 0.15)],
-            |s| {
-                s.water = 0.8;
-                s.rivers = 0.7;
-                s.relief = 0.3;
-            },
-        ),
-        preset(
-            "swamp_forest_edge",
-            "Swamp forest edge",
-            "Dry oak woods falling away into swamp and marsh.",
-            &[(Forest, 0.45), (Swamp, 0.35), (Marsh, 0.2)],
-            |s| {
-                s.water = 0.65;
-            },
-        ),
-        preset(
             "river_delta",
             "River delta",
             "Rivers splitting through marsh and grassland to the sea.",
@@ -301,6 +267,20 @@ pub fn all() -> Vec<Preset> {
                 s.water = 0.8;
                 s.sea = 0.3;
                 s.islands = 0.0;
+            },
+        ),
+        // Tropics.
+        preset(
+            "jungle",
+            "Jungle",
+            "Dense tropical forest on steep little hills, with big rivers and swampy lowlands.",
+            &[(Tropical, 0.85), (Swamp, 0.15)],
+            |s| {
+                s.relief = 0.6;
+                s.roughness = 0.6;
+                s.rivers = 0.85;
+                s.trees = 0.9;
+                s.vegetation = 0.85;
             },
         ),
         // Uplands.
@@ -315,27 +295,6 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
-            "moorland",
-            "Moorland",
-            "Bleak upland moor with boggy hollows and bare tops.",
-            &[(Highlands, 0.55), (Marsh, 0.3), (Meadow, 0.15)],
-            |s| {
-                s.relief = 0.45;
-                s.water = 0.7;
-                s.trees = 0.08;
-            },
-        ),
-        preset(
-            "heathland",
-            "Heathland",
-            "Low open heath and grassland under a big sky.",
-            &[(Highlands, 0.6), (Meadow, 0.4)],
-            |s| {
-                s.relief = 0.3;
-                s.trees = 0.12;
-            },
-        ),
-        preset(
             "eroded_hills",
             "Eroded hills",
             "Hills worn into sharp ridges and deep branching gullies.",
@@ -346,18 +305,34 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
-            "highland_lakes",
-            "Highland lakes",
-            "Lochs in long valleys between heathery hills.",
+            "table_mountains",
+            "Table mountains",
+            "Flat-topped plateaus on sheer cliffs, rising in steps above forest and meadow.",
             &[
-                (Highlands, 0.5),
-                (Taiga, 0.2),
-                (Marsh, 0.15),
-                (Meadow, 0.15),
+                (Forest, 0.3),
+                (Meadow, 0.25),
+                (Highlands, 0.25),
+                (PineForest, 0.2),
             ],
             |s| {
-                s.water = 0.9;
-                s.erosion = 0.7;
+                s.plateaus = 1.0;
+                s.mountains = 0.2;
+                s.erosion = 0.6;
+                s.rivers = 0.6;
+            },
+        ),
+        preset(
+            "river_canyons",
+            "River canyons",
+            "High tablelands cut by deep canyons, with rivers and waterfalls far below.",
+            &[(Highlands, 0.45), (PineForest, 0.35), (Meadow, 0.2)],
+            |s| {
+                s.plateaus = 0.85;
+                s.relief = 0.6;
+                s.erosion = 0.95;
+                s.rivers = 0.9;
+                s.water = 0.3;
+                s.trees = 0.35;
             },
         ),
         preset(
@@ -423,22 +398,6 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
-            "mountain_lakes",
-            "Mountain lakes",
-            "Mountain cirques and valleys holding clear lakes.",
-            &[
-                (Mountains, 0.3),
-                (AlpineMeadow, 0.2),
-                (Taiga, 0.3),
-                (SnowyPeaks, 0.1),
-                (Meadow, 0.1),
-            ],
-            |s| {
-                s.water = 0.9;
-                s.mountains = 0.6;
-            },
-        ),
-        preset(
             "alpine_pastures",
             "Alpine pastures",
             "High grassy slopes and rounded summits above the tree line.",
@@ -476,6 +435,24 @@ pub fn all() -> Vec<Preset> {
                 s.mountains = 0.35;
                 s.trees = 0.2;
                 s.water = 0.2;
+            },
+        ),
+        preset(
+            "volcanic_field",
+            "Volcanic field",
+            "Several volcanoes with crater lakes over ash, lava ridges and pine woods.",
+            &[
+                (Volcanic, 0.35),
+                (Highlands, 0.25),
+                (PineForest, 0.25),
+                (Marsh, 0.15),
+            ],
+            |s| {
+                s.volcanoes = 0.9;
+                s.plateaus = 0.25;
+                s.mountains = 0.3;
+                s.water = 0.6;
+                s.trees = 0.35;
             },
         ),
         // Tall worlds.
@@ -519,22 +496,53 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         tall(
-            "giant_fjords",
-            "Giant fjords",
-            "Tall world: mountains over a thousand blocks high plunging into long arms of the sea.",
+            "lost_plateaus",
+            "Lost plateaus",
+            "Tall world: flat-topped mountains on sheer cliffs hundreds of blocks high above a jungle.",
+            &[(Tropical, 0.7), (Highlands, 0.15), (Swamp, 0.15)],
+            |s| {
+                s.plateaus = 1.0;
+                s.mountains = 0.0;
+                s.relief = 0.5;
+                s.erosion = 0.7;
+                s.rivers = 0.75;
+                s.water = 0.5;
+                s.trees = 0.8;
+            },
+        ),
+        tall(
+            "mega_world",
+            "Mega world",
+            "Tall world: every biome on land that steps from the sea to plateaus and peaks near the sky.",
             &[
-                (Mountains, 0.35),
-                (Taiga, 0.3),
-                (SnowyPeaks, 0.1),
-                (AlpineMeadow, 0.1),
-                (PineForest, 0.15),
+                (Plains, 0.06),
+                (Meadow, 0.06),
+                (Forest, 0.08),
+                (BirchForest, 0.05),
+                (Taiga, 0.07),
+                (PineForest, 0.06),
+                (Swamp, 0.04),
+                (Marsh, 0.04),
+                (Highlands, 0.07),
+                (Mountains, 0.12),
+                (AlpineMeadow, 0.06),
+                (SnowyPeaks, 0.08),
+                (Tropical, 0.06),
+                (SnowyTaiga, 0.06),
+                (Tundra, 0.04),
+                (Volcanic, 0.05),
             ],
             |s| {
-                s.sea = 0.35;
-                s.islands = 0.75;
-                s.relief = 0.8;
-                s.erosion = 0.85;
-                s.mountains = 0.9;
+                s.plateaus = 0.9;
+                s.mountains = 0.8;
+                s.relief = 0.6;
+                s.erosion = 0.8;
+                s.rivers = 0.7;
+                s.water = 0.6;
+                s.sea = 0.12;
+                s.islands = 0.0;
+                s.volcanoes = 0.2;
+                s.biome_scale = 0.65;
             },
         ),
         // Coasts and islands.
@@ -604,6 +612,34 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
+            "volcano_island",
+            "Tropical volcano island",
+            "A jungle island around a great volcano with a crater lake, palm beaches and lava fields.",
+            &[(Tropical, 0.88), (Volcanic, 0.12)],
+            |s| {
+                s.sea = 0.5;
+                s.islands = 0.5;
+                s.volcanoes = 0.6;
+                s.water = 0.5;
+                s.rivers = 0.55;
+                s.trees = 0.7;
+                s.vegetation = 0.7;
+            },
+        ),
+        preset(
+            "tropical_archipelago",
+            "Tropical archipelago",
+            "Jungle islands with white beaches in warm shallow water, a few of them volcanic.",
+            &[(Tropical, 0.9), (Volcanic, 0.1)],
+            |s| {
+                s.sea = 0.6;
+                s.islands = 1.0;
+                s.volcanoes = 0.3;
+                s.trees = 0.7;
+                s.vegetation = 0.7;
+            },
+        ),
+        preset(
             "pine_coast",
             "Pine coast",
             "Rocky, pine-clad shore with coves and skerries.",
@@ -663,57 +699,29 @@ pub fn all() -> Vec<Preset> {
             },
         ),
         preset(
-            "temperate_mix",
-            "Temperate mix",
-            "A bit of everything from the lowlands to the hills.",
-            &[
-                (Plains, 0.2),
-                (Meadow, 0.15),
-                (Forest, 0.2),
-                (BirchForest, 0.1),
-                (Swamp, 0.1),
-                (Highlands, 0.15),
-                (Taiga, 0.1),
-            ],
-            |_| {},
-        ),
-        preset(
             "wild_mix",
             "Wild mix",
             "Every biome on one map, from marsh to snowy peaks.",
             &[
-                (Plains, 0.1),
-                (Meadow, 0.08),
-                (Forest, 0.1),
-                (BirchForest, 0.07),
-                (Taiga, 0.1),
-                (PineForest, 0.07),
-                (Swamp, 0.08),
-                (Marsh, 0.06),
-                (Highlands, 0.1),
-                (Mountains, 0.12),
-                (AlpineMeadow, 0.06),
-                (SnowyPeaks, 0.06),
+                (Plains, 0.08),
+                (Meadow, 0.06),
+                (Forest, 0.08),
+                (BirchForest, 0.06),
+                (Taiga, 0.07),
+                (PineForest, 0.06),
+                (Swamp, 0.06),
+                (Marsh, 0.05),
+                (Highlands, 0.07),
+                (Mountains, 0.09),
+                (AlpineMeadow, 0.05),
+                (SnowyPeaks, 0.05),
+                (Tropical, 0.06),
+                (SnowyTaiga, 0.06),
+                (Tundra, 0.05),
+                (Volcanic, 0.05),
             ],
             |s| {
                 s.biome_scale = 0.45;
-            },
-        ),
-        preset(
-            "valley_and_peaks",
-            "Valleys and peaks",
-            "Farmland valleys enclosed by steep wooded mountains.",
-            &[
-                (Plains, 0.25),
-                (Meadow, 0.15),
-                (Forest, 0.2),
-                (Mountains, 0.25),
-                (AlpineMeadow, 0.1),
-                (SnowyPeaks, 0.05),
-            ],
-            |s| {
-                s.biome_scale = 0.35;
-                s.biome_blend = 0.35;
             },
         ),
     ]
@@ -730,7 +738,7 @@ mod tests {
     #[test]
     fn ids_are_unique_and_settings_valid() {
         let presets = all();
-        assert!(presets.len() >= 40);
+        assert!(presets.len() >= 30);
         for (i, p) in presets.iter().enumerate() {
             assert!(presets[i + 1..].iter().all(|q| q.id != p.id), "{}", p.id);
             assert!(p.settings("t", 512, 1).validate().is_ok(), "{}", p.id);
