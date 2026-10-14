@@ -137,7 +137,10 @@ impl RoadKit {
         };
         let r = rut(inside) + dither(seed, salt::RUT, x, z, 0.35);
         if r > 0.55 {
-            return Some(pick(&self.ruts[w], hash_unit(patch(seed, salt::RUT, x, z, 2.5))));
+            return Some(pick(
+                &self.ruts[w],
+                hash_unit(patch(seed, salt::RUT, x, z, 2.5)),
+            ));
         }
         // A grassy hump between the outer ruts here and there.
         if r < 0.1

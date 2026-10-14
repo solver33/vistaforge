@@ -71,9 +71,7 @@ fn a_waterfall_drops_into_its_pool() {
 
 #[test]
 fn waterfalls_hold_their_water_anywhere() {
-    let base = presets::find("highlands")
-        .unwrap()
-        .settings("t", 384, 11);
+    let base = presets::find("highlands").unwrap().settings("t", 384, 11);
     for (k, (radius, drop, angle)) in [
         (1.0, 4.0, 0.0),
         (2.0, 9.0, 37.0),
@@ -95,15 +93,17 @@ fn waterfalls_hold_their_water_anywhere() {
         let plain = Terrain::new(&base, Quality::Full).unwrap();
         let pg = plain.grid(rect.expand(1));
         let before = leaks(&pg, rect).len();
-        assert!(l.len() <= before, "case {k}: {} leaks, {before} before: {l:?}", l.len());
+        assert!(
+            l.len() <= before,
+            "case {k}: {} leaks, {before} before: {l:?}",
+            l.len()
+        );
     }
 }
 
 #[test]
 fn a_road_is_laid_smoothly_into_the_land() {
-    let base = presets::find("highlands")
-        .unwrap()
-        .settings("t", 384, 5);
+    let base = presets::find("highlands").unwrap().settings("t", 384, 5);
     let plain = Terrain::new(&base, Quality::Full).unwrap();
     let road = ShapeEdit::Road {
         points: vec![[20.0, 60.0], [180.0, 150.0], [360.0, 300.0]],
@@ -166,16 +166,31 @@ fn brushes_keep_rivers_and_lakes_in() {
         for k in 0..6 {
             let f = k as f32 / 6.0;
             s.edits.push(ShapeEdit::Road {
-                points: vec![[10.0, 20.0 + 340.0 * f], [190.0, 380.0 - 300.0 * f], [370.0, 30.0 + 320.0 * f]],
+                points: vec![
+                    [10.0, 20.0 + 340.0 * f],
+                    [190.0, 380.0 - 300.0 * f],
+                    [370.0, 30.0 + 320.0 * f],
+                ],
                 width: 2.0 + 6.0 * k as f32,
             });
-            s.edits.push(waterfall(60.0 + 50.0 * k as f32, 330.0 - 55.0 * k as f32, 1.0 + 3.0 * k as f32, 5.0 + 9.0 * k as f32, 60.0 * k as f32));
+            s.edits.push(waterfall(
+                60.0 + 50.0 * k as f32,
+                330.0 - 55.0 * k as f32,
+                1.0 + 3.0 * k as f32,
+                5.0 + 9.0 * k as f32,
+                60.0 * k as f32,
+            ));
         }
         let t = Terrain::new(&s, Quality::Full).unwrap();
         let rect = Rect::new(0, 0, 384, 384);
         let (g, pg) = (t.grid(rect.expand(1)), plain.grid(rect.expand(1)));
         let (after, before) = (leaks(&g, rect), leaks(&pg, rect));
-        assert!(after.len() <= before.len(), "{id}: {} leaks, {} before: {after:?}", after.len(), before.len());
+        assert!(
+            after.len() <= before.len(),
+            "{id}: {} leaks, {} before: {after:?}",
+            after.len(),
+            before.len()
+        );
     }
 }
 
@@ -214,38 +229,146 @@ fn dump_blocks() {
     let mut s = settings(512, &[(Biome::Plains, 0.6), (Biome::Forest, 0.4)]);
     s.seed = 7;
     s.edits.push(ShapeEdit::Road {
-        points: vec![[30.0, 250.0], [150.0, 220.0], [260.0, 270.0], [400.0, 240.0], [490.0, 300.0]],
+        points: vec![
+            [30.0, 250.0],
+            [150.0, 220.0],
+            [260.0, 270.0],
+            [400.0, 240.0],
+            [490.0, 300.0],
+        ],
         width: 5.0,
     });
     s.edits.push(waterfall(128.0, 380.0, 3.0, 14.0, 90.0));
     let g = Generator::new(&s, &catalog, Quality::Full).unwrap();
-    let var = |k: &str, d: i32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let var = |k: &str, d: i32| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
     let (x0, z0, w) = (var("VF_X0", 130), var("VF_Z0", 205), var("VF_W", 40));
     let piece = g.generate(Rect::new(x0, z0, x0 + w, z0 + w));
-    let short = |id| {
-        g.palette.with(id, |st| {
-            let n = st.name.trim_start_matches("conquest:").trim_start_matches("minecraft:");
-            let l = st.get("layers").map(|l| format!("{l}")).unwrap_or_default();
-            format!("{n}{l}")
-        })
+    // One letter per column: the ground's top block, upper case when something stands on it.
+    let class = |n: &str| -> char {
+        let n = n
+            .trim_start_matches("conquest:")
+            .trim_start_matches("minecraft:");
+        match n {
+            _ if n.contains("water") => '~',
+            _ if n.starts_with("coarse_dirt") || n.starts_with("dirt_path") => 'c',
+            _ if n == "dirt" || n.starts_with("loamy_dirt") => 'l',
+            _ if n.starts_with("packed_mud") => 'p',
+            _ if n.starts_with("dry_mud") => 'd',
+            _ if n.starts_with("brown_earth") => 'e',
+            _ if n.starts_with("mud") || n.starts_with("thick_mud") => 'm',
+            _ if n.starts_with("rocky_soil")
+                || n.starts_with("small_stones")
+                || n.starts_with("brown_gravel") =>
+            {
+                'o'
+            }
+            _ if n.starts_with("grassy_dirt") => 'g',
+            _ if n.contains("grass_block") || n.contains("clover") => '.',
+            _ if n.contains("floor") || n.contains("podzol") => 'f',
+            _ if n.contains("granite")
+                || n.contains("stone")
+                || n.contains("schist")
+                || n.contains("limestone")
+                || n.contains("slate") =>
+            {
+                'r'
+            }
+            _ => '?',
+        }
     };
-    let mut names = std::collections::BTreeMap::new();
+    let mut other = std::collections::BTreeMap::new();
     for z in z0..z0 + w {
         let mut line = String::new();
+        let mut roads = String::new();
         for x in x0..x0 + w {
-            let top = piece.area.top(x, z).unwrap();
+            let c = piece.grid.get(x, z);
+            let (gy, layers) = c.ground();
             let col = piece.area.column(x, z);
-            let id = col[(top - crate::world::MIN_Y) as usize];
-            let n = short(id);
-            let next = names.len();
-            let c = *names.entry(n).or_insert(next);
-            let ch = if c < 26 { (b'a' + c as u8) as char } else { (b'A' + (c - 26) as u8 % 26) as char };
+            let at = |y: i32| {
+                col.get((y - crate::world::MIN_Y) as usize)
+                    .copied()
+                    .unwrap_or(crate::sink::AIR)
+            };
+            // The ground block: the partial layer, or the full block under the first air.
+            let gid = if layers > 0 { at(gy) } else { at(gy - 1) };
+            let above = at(if layers > 0 { gy + 1 } else { gy });
+            let name = g.palette.with(gid, |st| st.name.clone());
+            let mut ch = class(&name);
+            if ch == '?' {
+                *other.entry(name).or_insert(0) += 1;
+            }
+            let water = c.water_level.is_some();
+            if water {
+                ch = if c.fall.is_some() { 'F' } else { '~' };
+            } else if above != crate::sink::AIR {
+                ch = ch.to_ascii_uppercase();
+                if ch == '.' {
+                    ch = '*';
+                }
+            }
             line.push(ch);
+            roads.push(match c.road {
+                None => ' ',
+                Some(r) if r < 0.0 => '-',
+                Some(r) => char::from_digit((r as u32).min(9), 10).unwrap(),
+            });
         }
-        println!("{z:4} {line}");
+        println!("{z:4} {line}   {roads}");
     }
-    for (n, c) in &names {
-        let ch = if *c < 26 { (b'a' + *c as u8) as char } else { (b'A' + (*c - 26) as u8 % 26) as char };
-        println!("{ch} {n}");
+    println!("{other:?}");
+    if let Ok(px) = std::env::var("VF_PROFILE_X") {
+        let px: i32 = px.parse().unwrap();
+        for z in z0..z0 + w {
+            let c = piece.grid.get(px, z);
+            println!(
+                "z {z}: h {:6.2} water {:?} fall {:?} slope {:.2} rock {:.2} biome {:?}",
+                c.height, c.water_level, c.fall, c.slope, c.rock, c.biome
+            );
+        }
+    }
+}
+
+/// Heights around a waterfall in its own frame, rows downstream and columns across, with the
+/// change from the plain land below each (run with --ignored --nocapture). `VF_PRESET` picks
+/// a preset and `VF_WF` the waterfall as `x,z,radius,drop,angle`.
+#[test]
+#[ignore]
+fn waterfall_sections() {
+    let mut s = match std::env::var("VF_PRESET") {
+        Ok(p) => presets::find(&p).unwrap().settings("t", 512, 7),
+        Err(_) => settings(512, &[(Biome::Plains, 0.6), (Biome::Forest, 0.4)]),
+    };
+    s.seed = 7;
+    let v: Vec<f32> = std::env::var("VF_WF")
+        .unwrap_or("128,380,3,14,90".into())
+        .split(',')
+        .map(|x| x.parse().unwrap())
+        .collect();
+    let plain = Terrain::new(&s, Quality::Full).unwrap();
+    s.edits.push(waterfall(v[0], v[1], v[2], v[3], v[4]));
+    let t = Terrain::new(&s, Quality::Full).unwrap();
+    let (ux, uz) = (v[4].to_radians().cos(), v[4].to_radians().sin());
+    for ls in (-60..=60).step_by(4) {
+        let (mut a, mut b) = (format!("s {ls:4}:"), "       ".to_string());
+        for lt in (-60..=60).step_by(4) {
+            let x = (v[0] + ux * ls as f32 - uz * lt as f32).round() as i32;
+            let z = (v[1] + uz * ls as f32 + ux * lt as f32).round() as i32;
+            let (c, p) = (t.column(x, z), plain.column(x, z));
+            let w = if c.fall.is_some() {
+                'F'
+            } else if c.water_level.is_some() {
+                '~'
+            } else {
+                ' '
+            };
+            a += &format!(" {:3.0}{w}", c.height);
+            b += &format!(" {:+3.0} ", c.height - p.height);
+        }
+        println!("{a}\n{b}");
     }
 }

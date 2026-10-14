@@ -194,11 +194,14 @@ impl Road {
         let nbx = ((hi.0 - lo.0) / BUCKET).ceil() as usize + 1;
         let nbz = ((hi.1 - lo.1) / BUCKET).ceil() as usize + 1;
         let mut lists: Vec<Vec<u32>> = vec![Vec::new(); nbx * nbz];
-        let cell = |v: f64, o: f64, n: usize| (((v - o) / BUCKET).floor().max(0.0) as usize).min(n - 1);
+        let cell =
+            |v: f64, o: f64, n: usize| (((v - o) / BUCKET).floor().max(0.0) as usize).min(n - 1);
         for k in 0..m - 1 {
             let (a, b) = (pts[k], pts[k + 1]);
-            for bz in cell(a.1.min(b.1) - reach, lo.1, nbz)..=cell(a.1.max(b.1) + reach, lo.1, nbz) {
-                for bx in cell(a.0.min(b.0) - reach, lo.0, nbx)..=cell(a.0.max(b.0) + reach, lo.0, nbx)
+            for bz in cell(a.1.min(b.1) - reach, lo.1, nbz)..=cell(a.1.max(b.1) + reach, lo.1, nbz)
+            {
+                for bx in
+                    cell(a.0.min(b.0) - reach, lo.0, nbx)..=cell(a.0.max(b.0) + reach, lo.0, nbx)
                 {
                     lists[bz * nbx + bx].push(k as u32);
                 }

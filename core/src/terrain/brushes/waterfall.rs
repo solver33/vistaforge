@@ -71,7 +71,7 @@ impl Waterfall {
         let pool = (half + 2.5 + 0.12 * drop).min(half + 14.0);
         let run = (3.0 * half + 12.0 + 0.2 * drop).clamp(14.0, 64.0);
         let spring = half + 2.0;
-        let fade = (0.8 * drop + 8.0).clamp(10.0, 64.0);
+        let fade = (drop + 10.0).clamp(12.0, 72.0);
         let scarp = pool + 0.35 * drop + 6.0;
 
         // Ground above the lip, along the stream, and below it, around the pool.
@@ -122,7 +122,10 @@ impl Waterfall {
     /// Position in the waterfall's frame.
     fn frame(&self, x: f64, z: f64) -> (f64, f64) {
         let (dx, dz) = (x - self.p.0, z - self.p.1);
-        (dx * self.u.0 + dz * self.u.1, -dx * self.u.1 + dz * self.u.0)
+        (
+            dx * self.u.0 + dz * self.u.1,
+            -dx * self.u.1 + dz * self.u.0,
+        )
     }
 
     /// Where the cliff is at `t` across: along the pool's upstream half, then on to the
@@ -151,7 +154,11 @@ impl Waterfall {
         if s < cliff {
             // The stream, from the spring to the lip.
             let hw = self.stream_half(s);
-            let channel = if s > -self.run { t.abs() - hw } else { f64::MAX };
+            let channel = if s > -self.run {
+                t.abs() - hw
+            } else {
+                f64::MAX
+            };
             let (ss, st) = (s + self.run, t);
             let wobble = 1.0 + 0.6 * (0.5 + 0.5 * perlin(self.seed ^ 0x5921, ss / 4.0, st / 4.0));
             let spring = ss.hypot(st) - (self.spring + wobble - 1.0);
@@ -174,18 +181,22 @@ impl Waterfall {
 
     /// 1 near the waterfall, fading to 0 where the land is untouched.
     fn weight(&self, s: f64, t: f64) -> f64 {
-        // Distance to the stream's axis, the pool and the escarpment.
-        let stream = {
+        // Distance to the terrace, the pool and the escarpment. The terrace narrows from the
+        // escarpment's width at the cliff to the spring's, so on flat land the stream runs
+        // out over a broad spur rather than along a bank.
+        let terrace = {
             let ss = s.clamp(-self.run, 0.0);
-            (s - ss).hypot(t) - (self.half + 4.0)
+            let wide = lerp(self.scarp, self.spring + 4.0, -ss / self.run);
+            (s - ss).hypot((t.abs() - wide).max(0.0))
         };
         let spring = (s + self.run).hypot(t) - (self.spring + 4.0);
-        let pool = (s - self.pool).hypot(t) - (self.pool + 5.0);
+        let pool =
+            (s - self.pool).hypot(t) - (self.pool + 5.0 + 0.15 * (self.top - self.low) as f64);
         let scarp = {
             let tt = t.clamp(-self.scarp, self.scarp);
             (s - self.cliff(tt)).hypot(t - tt) - 3.0
         };
-        let d = stream.min(spring).min(pool).min(scarp).max(0.0);
+        let d = terrace.min(spring).min(pool).min(scarp).max(0.0);
         1.0 - smoothstep(0.0, self.fade, d)
     }
 
@@ -223,6 +234,18 @@ impl Waterfall {
             }
         };
         let base = s.h as f64;
+        // Away from the water the land keeps what does no harm: hills above the terrace, so a
+        // stream on a hillside runs down a valley, and dips below the basin, so the ground
+        // still falls away past the pool's rim.
+        let target = match part {
+            Part::Upper { water: false, edge } if base > target => {
+                lerp(target, base, smoothstep(1.5, 8.0, edge))
+            }
+            Part::Lower { water: false, edge } if base < target => {
+                lerp(target, base, smoothstep(3.0, 10.0, edge))
+            }
+            _ => target,
+        };
         let core = w >= 1.0;
         // The land's own rivers and lakes stay as they are around the waterfall, and the
         // ground beside them is only ever raised, so their water stays in.
@@ -252,7 +275,10 @@ impl Waterfall {
                     matches!(self.part(a, b), Part::Upper { water: true, .. })
                 };
                 s.fall = (lower
-                    && (feeds(1.0, 0.0) || feeds(-1.0, 0.0) || feeds(0.0, 1.0) || feeds(0.0, -1.0)))
+                    && (feeds(1.0, 0.0)
+                        || feeds(-1.0, 0.0)
+                        || feeds(0.0, 1.0)
+                        || feeds(0.0, -1.0)))
                 .then_some(self.top);
             }
             _ => {
