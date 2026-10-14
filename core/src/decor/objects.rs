@@ -120,20 +120,21 @@ fn chances(biome: Biome, zone: Zone) -> (f32, f32, f32) {
         B::Forest => (0.04, 0.05, 0.08),
         B::BirchForest if wooded => (0.05, 0.25, 0.1),
         B::BirchForest => (0.04, 0.04, 0.06),
-        B::Taiga if wooded => (0.12, 0.35, 0.12),
-        B::Taiga => (0.1, 0.04, 0.06),
-        B::PineForest if wooded => (0.1, 0.25, 0.1),
-        B::PineForest => (0.1, 0.03, 0.05),
+        B::Taiga if wooded => (0.08, 0.35, 0.12),
+        B::Taiga => (0.07, 0.04, 0.06),
+        B::PineForest if wooded => (0.07, 0.25, 0.1),
+        B::PineForest => (0.07, 0.03, 0.05),
         B::Swamp if wooded => (0.02, 0.35, 0.15),
         B::Swamp => (0.02, 0.18, 0.1),
         B::Marsh => (0.02, 0.03, 0.03),
-        B::Highlands if wooded => (0.2, 0.1, 0.05),
-        B::Highlands => (0.25, 0.0, 0.0),
-        B::Mountains if wooded => (0.25, 0.12, 0.05),
-        B::Mountains => (0.3, 0.0, 0.0),
-        B::AlpineMeadow if wooded => (0.15, 0.1, 0.04),
-        B::AlpineMeadow => (0.18, 0.0, 0.0),
-        B::SnowyPeaks => (0.15, 0.0, 0.0),
+        // Few on mountains: on open slopes, seen from afar, a boulder reads as a pasted lump.
+        B::Highlands if wooded => (0.05, 0.1, 0.05),
+        B::Highlands => (0.05, 0.0, 0.0),
+        B::Mountains if wooded => (0.05, 0.12, 0.05),
+        B::Mountains => (0.05, 0.0, 0.0),
+        B::AlpineMeadow if wooded => (0.04, 0.1, 0.04),
+        B::AlpineMeadow => (0.04, 0.0, 0.0),
+        B::SnowyPeaks => (0.02, 0.0, 0.0),
         B::Beach => (0.03, 0.02, 0.0),
         B::River => (0.1, 0.03, 0.02),
         B::Lake => (0.04, 0.02, 0.01),
@@ -142,9 +143,10 @@ fn chances(biome: Biome, zone: Zone) -> (f32, f32, f32) {
         }
     };
     match zone {
-        Zone::Stony => (boulder * 1.8, log * 0.4, stump * 0.4),
-        Zone::Scree => (boulder * 2.2, 0.0, 0.0),
-        Zone::Rock => (boulder, 0.0, 0.0),
+        Zone::Stony => (boulder, log * 0.4, stump * 0.4),
+        // Scree and bare rock are rough enough already.
+        Zone::Scree => (boulder * 0.6, 0.0, 0.0),
+        Zone::Rock => (boulder * 0.3, 0.0, 0.0),
         Zone::Shore => (boulder * 1.5, log, stump * 0.5),
         Zone::Wet => (boulder * 0.6, log, stump),
         Zone::Bed(d) => {
@@ -285,15 +287,27 @@ impl Objects {
         sink: &mut dyn BlockSink,
     ) {
         let r = |k: u64| hash_unit(hash64(h ^ k));
-        let big = matches!(
-            top.biome,
+        // In the mountains and on rough ground boulders lie low, sunk half into the slope, so
+        // they are part of it rather than lumps set on top.
+        let low = matches!(
+            top.biome.fallback(),
             Biome::Mountains | Biome::Highlands | Biome::SnowyPeaks | Biome::AlpineMeadow
-        ) || matches!(top.zone, Zone::Scree | Zone::Rock);
-        let radius = (1.2 + 1.9 * r(2).powf(1.6) + if big { 0.6 } else { 0.0 }).min(3.6);
+        ) || matches!(top.zone, Zone::Stony | Zone::Scree | Zone::Rock);
+        let radius = if low {
+            (1.0 + 1.4 * r(2).powf(1.6)).min(2.4)
+        } else {
+            (1.2 + 1.9 * r(2).powf(1.6)).min(3.1)
+        };
         let (rx, rz) = (radius, radius * (0.6 + 0.4 * r(3)));
         let angle = r(4) * std::f32::consts::PI;
         let (sin, cos) = angle.sin_cos();
-        let height = radius * (0.5 + 0.55 * r(5));
+        let height = radius
+            * if low {
+                0.35 + 0.3 * r(5)
+            } else {
+                0.5 + 0.55 * r(5)
+            };
+        let sunk = if low { 0.6 } else { 0.3 };
         let reach = radius.ceil() as i32 + 1;
         if near_tree(x, z, reach + 1) {
             return;
@@ -301,6 +315,10 @@ impl Objects {
         let Some(anchor) = grid.try_get(x, z) else {
             return;
         };
+        // On a steep slope the downhill side would stand out as a wall.
+        if anchor.slope > 0.8 {
+            return;
+        }
         let base = anchor.height;
         // The whole footprint must be known, so every piece builds the same boulder.
         let mut cols = Vec::new();
@@ -330,7 +348,9 @@ impl Objects {
         for &(dx, dz, q, c) in &cols {
             let (cx, cz) = (x + dx, z + dz);
             let bump = 0.35 * (hash_unit(hash2(h, dx as i64, dz as i64)) - 0.5);
-            let crest = base - 0.3 + height * (1.0 - q).sqrt() + bump;
+            // Half follows the ground under it, so the downhill side doesn't stand proud.
+            let under = base + 0.5 * (c.height - base);
+            let crest = under - sunk + height * (1.0 - q).sqrt() + bump;
             let (gy, gl) = c.ground();
             if crest <= gy as f32 + gl as f32 / 8.0 + 0.1 {
                 continue;

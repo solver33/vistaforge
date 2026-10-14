@@ -564,12 +564,6 @@ impl Surface {
                 let water = tex[i] * tint[i] as f32 / 255.0 * 1.6;
                 c[i] = c[i] * (1.0 - t) * (1.0 - 0.04 * col.depth()).max(0.6) + water * t;
             }
-            // White water where a waterfall comes down.
-            if col.fall.is_some() {
-                for v in &mut c {
-                    *v = 0.4 * *v + 0.6 * 235.0;
-                }
-            }
         }
         c.map(|v| v.clamp(0.0, 255.0) as u8)
     }
