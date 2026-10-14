@@ -24,6 +24,19 @@ async function mapPoint(page: Page, x: number, z: number, size = 1024) {
   return { x: box.x + box.width / 2 + (x - size / 2) * scale, y: box.y + box.height / 2 + (z - size / 2) * scale };
 }
 
+/** The value of an inspector field. */
+async function field(page: Page, key: string): Promise<number> {
+  return Number(await page.getByTestId('inspector').locator(`[data-field="${key}"]`).getAttribute('aria-valuenow'));
+}
+
+/** Types a number into an inspector field: a click without dragging opens it for typing. */
+async function typeField(page: Page, key: string, value: number) {
+  const f = page.getByTestId('inspector').locator(`[data-field="${key}"]`);
+  await f.click();
+  await f.locator('input').fill(String(value));
+  await f.locator('input').press('Enter');
+}
+
 async function hooks(page: Page): Promise<MockHooks> {
   return page.evaluate(() => (window as unknown as { __vistaforgeMock: MockHooks }).__vistaforgeMock);
 }
@@ -111,11 +124,11 @@ test('place, edit, move and delete a hill on the map', async ({ page }) => {
   await expect(edits).toContainText('Hill');
   const inspector = page.getByTestId('inspector');
   await expect(inspector).toBeVisible();
-  const radius = Number(await inspector.locator('[data-field="radius"]').inputValue());
+  const radius = await field(page, 'radius');
   expect(radius).toBeGreaterThan(70);
   expect(radius).toBeLessThan(90);
 
-  await inspector.locator('[data-field="height"]').fill('40');
+  await typeField(page, 'height', 40);
   await expect(edits).toContainText('+40 high');
 
   // Drag it 100 blocks east.
@@ -124,7 +137,7 @@ test('place, edit, move and delete a hill on the map', async ({ page }) => {
   await page.mouse.down();
   await page.mouse.move(c.x, c.y, { steps: 5 });
   await page.mouse.up();
-  const x = Number(await inspector.locator('input').first().inputValue());
+  const x = await field(page, 'x');
   expect(Math.abs(x - 400)).toBeLessThan(4);
 
   await page.getByTestId('view-map').locator('canvas').focus();
@@ -147,9 +160,7 @@ test('a tall world raises the height limits, and going back lowers what is too h
   await page.locator('[data-tool="mountain"]').click();
   const p = await mapPoint(page, 512, 512);
   await page.mouse.click(p.x, p.y);
-  const height = page.getByTestId('inspector').locator('[data-field="height"]');
-  await height.fill('1500');
-  await height.press('Enter');
+  await typeField(page, 'height', 1500);
   await expect(page.getByTestId('edits')).toContainText('1500 high');
 
   await page.getByTestId('save-settings').click();
@@ -206,7 +217,60 @@ test('a click with the mountain tool places a mountain sized to the map', async 
   const p = await mapPoint(page, 512, 512);
   await page.mouse.click(p.x, p.y);
   await expect(page.getByTestId('edits')).toContainText('Mountain');
-  await expect(page.getByTestId('inspector').locator('[data-field="radius"]')).toHaveValue('82');
+  await expect(page.getByTestId('inspector').locator('[data-field="radius"]')).toHaveAttribute('aria-valuenow', '82');
+});
+
+test('drag a field with the mouse to change a landform', async ({ page }) => {
+  const problems = await open(page);
+  await page.locator('[data-tool="mountain"]').click();
+  const p = await mapPoint(page, 512, 512);
+  await page.mouse.click(p.x, p.y);
+  const edits = page.getByTestId('edits');
+  await expect(edits).toContainText('74 high, r 82');
+
+  /** Drags across a field by `dx` pixels, holding Shift if `fine`. */
+  async function drag(key: string, dx: number, fine = false) {
+    const box = (await page.getByTestId('inspector').locator(`[data-field="${key}"]`).boundingBox())!;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(box.x + box.width / 2, y);
+    await page.mouse.down();
+    if (fine) await page.keyboard.down('Shift');
+    await page.mouse.move(box.x + box.width / 2 + dx, y, { steps: 10 });
+    if (fine) await page.keyboard.up('Shift');
+    await page.mouse.up();
+  }
+
+  // Height steps evenly: the whole 10 to 320 range over 400 pixels.
+  await drag('height', 100);
+  const high = await field(page, 'height');
+  expect(Math.abs(high - 151)).toBeLessThanOrEqual(2);
+  await expect(edits).toContainText(`${high} high`);
+  // Shift makes the steps ten times finer.
+  await drag('height', 100, true);
+  expect(Math.abs((await field(page, 'height')) - high - 8)).toBeLessThanOrEqual(2);
+  // Radius steps in ratio: a hundred pixels left divides it by 4 (the 8 to 2048 range over 400 pixels).
+  await drag('radius', -100);
+  expect(Math.abs((await field(page, 'radius')) - 20.5)).toBeLessThanOrEqual(1);
+  // Past the end it stops at the limit.
+  await drag('height', 1000);
+  expect(await field(page, 'height')).toBe(320);
+
+  // A click opens it for typing; arrow keys nudge it; Delete there leaves the landform alone.
+  await typeField(page, 'height', 250);
+  await expect(edits).toContainText('250 high');
+  const height = page.getByTestId('inspector').locator('[data-field="height"]');
+  await height.press('ArrowRight');
+  await height.press('Shift+ArrowLeft');
+  expect(await field(page, 'height')).toBe(241);
+  await height.press('Delete');
+  await expect(edits.locator('li')).toHaveCount(1);
+
+  // Every change is one undo step.
+  await page.getByTestId('undo').click();
+  await page.getByTestId('undo').click();
+  await page.getByTestId('undo').click();
+  expect(await field(page, 'height')).toBe(320);
+  expect(problems).toEqual([]);
 });
 
 test('export with progress, then replace the world', async ({ page }) => {

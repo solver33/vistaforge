@@ -2,21 +2,26 @@
   import { app } from '../lib/app.svelte';
   import { isCircle, isLine, kindInfo } from '../lib/edits';
   import type { ShapeEdit } from '../lib/types';
+  import DragNumber from './DragNumber.svelte';
 
   let { index }: { index: number } = $props();
 
   const edit = $derived(app.settings.edits[index] as ShapeEdit | undefined);
   const biomes = $derived(app.info?.biomes.filter((b) => !b.feature) ?? []);
 
-  /** The numeric fields each landform has, beyond its position. Heights go higher in tall worlds. */
-  const FIELDS: Record<string, [key: string, label: string, min: number, max: number][]> = $derived({
-    hill: [['radius', 'Radius', 4, 2048], ['height', 'Height', -120, app.limits.hill]],
-    mountain: [['radius', 'Radius', 8, 2048], ['height', 'Height', 10, app.limits.mountain]],
-    plateau: [['radius', 'Radius', 4, 2048], ['level', 'Level (Y)', -60, app.limits.plateau]],
-    lake: [['radius', 'Radius', 4, 2048], ['depth', 'Depth', 1, 60]],
-    river: [['width', 'Width', 2, 200], ['depth', 'Depth', 1, 30]],
-    ridge: [['width', 'Width', 8, 1024], ['height', 'Height', 10, app.limits.ridge]],
-    biome_zone: [['radius', 'Radius', 8, 2048]],
+  /**
+   * The numeric fields each landform has, beyond its position: key, label, range, and whether the
+   * field steps in ratio (sizes) rather than in blocks. Heights go higher in tall worlds.
+   */
+  type Field = [key: string, label: string, min: number, max: number, log?: boolean];
+  const FIELDS: Record<string, Field[]> = $derived({
+    hill: [['radius', 'Radius', 4, 2048, true], ['height', 'Height', -120, app.limits.hill]],
+    mountain: [['radius', 'Radius', 8, 2048, true], ['height', 'Height', 10, app.limits.mountain]],
+    plateau: [['radius', 'Radius', 4, 2048, true], ['level', 'Level (Y)', -60, app.limits.plateau]],
+    lake: [['radius', 'Radius', 4, 2048, true], ['depth', 'Depth', 1, 60]],
+    river: [['width', 'Width', 2, 200, true], ['depth', 'Depth', 1, 30]],
+    ridge: [['width', 'Width', 8, 1024, true], ['height', 'Height', 10, app.limits.ridge]],
+    biome_zone: [['radius', 'Radius', 8, 2048, true]],
   });
 
   function set(key: string, value: number, min: number, max: number) {
@@ -40,22 +45,21 @@
     </div>
     <div class="fields">
       {#if isCircle(edit)}
-        <label>X <input type="number" value={Math.round(edit.x)} oninput={(e) => set('x', e.currentTarget.valueAsNumber, 0, app.settings.size)} onchange={() => app.commit()} /></label>
-        <label>Z <input type="number" value={Math.round(edit.z)} oninput={(e) => set('z', e.currentTarget.valueAsNumber, 0, app.settings.size)} onchange={() => app.commit()} /></label>
+        {@const size = app.settings.size}
+        <DragNumber label="X" field="x" value={Math.round(edit.x)} min={0} max={size} oninput={(v) => set('x', v, 0, size)} onchange={() => app.commit()} />
+        <DragNumber label="Z" field="z" value={Math.round(edit.z)} min={0} max={size} oninput={(v) => set('z', v, 0, size)} onchange={() => app.commit()} />
       {/if}
-      {#each FIELDS[edit.kind] ?? [] as [key, label, min, max] (key)}
-        <label>
+      {#each FIELDS[edit.kind] ?? [] as [key, label, min, max, log] (key)}
+        <DragNumber
           {label}
-          <input
-            type="number"
-            data-field={key}
-            {min}
-            {max}
-            value={num(key)}
-            oninput={(e) => set(key, e.currentTarget.valueAsNumber, min, max)}
-            onchange={() => app.commit()}
-          />
-        </label>
+          field={key}
+          {min}
+          {max}
+          {log}
+          value={num(key)}
+          oninput={(v) => set(key, v, min, max)}
+          onchange={() => app.commit()}
+        />
       {/each}
       {#if edit.kind === 'biome_zone'}
         <label class="wide">
@@ -128,7 +132,6 @@
     grid-column: 1 / -1;
   }
 
-  input,
   select {
     width: 100%;
     color: var(--text);
