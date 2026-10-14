@@ -330,11 +330,11 @@ fn waterfall(x: i32, z: i32) -> ColumnInfo {
     }
 }
 
-/// A waterfall's curtain is falling water streaked with white water, its colour matches the
-/// pools, the pool under it is scoured to dark stones, the spray keeps the banks wet and mossy,
-/// steam and mist hang over its foot, and nothing grows in the churning water.
+/// A waterfall's curtain is plain falling water whose colour matches the pools, the pool under
+/// it is scoured to dark stones, the spray keeps the banks wet and mossy, nothing white (white
+/// water, steam, clouds) is put anywhere near it, and nothing grows in the churning water.
 #[test]
-fn waterfalls_have_white_water_and_mist() {
+fn waterfalls_are_plain_falling_water() {
     let Some(catalog) = catalog() else {
         eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
         return;
@@ -346,32 +346,18 @@ fn waterfalls_have_white_water_and_mist() {
     let name = |x: i32, y: i32, z: i32| palette.state(area.get(x, y, z)).name.clone();
 
     // The curtain.
-    let (mut falling, mut foam) = (0, 0);
     for x in 24..=25 {
         for z in 12..=17 {
             for y in 65..=72 {
                 let state = palette.state(area.get(x, y, z));
-                match state.name.as_str() {
-                    "minecraft:water" => {
-                        assert_eq!(state.get("level"), Some("8"), "{x} {y} {z}");
-                        falling += 1;
-                    }
-                    "conquest:waterfall_pane" => {
-                        assert_eq!(state.get("waterlogged"), Some("true"));
-                        // Standing across the river, which flows along x.
-                        assert_eq!(state.get("north"), Some("true"));
-                        foam += 1;
-                    }
-                    other => panic!("{other} in the curtain at {x} {y} {z}"),
-                }
+                assert_eq!(state.name, "minecraft:water", "{x} {y} {z}");
+                assert_eq!(state.get("level"), Some("8"), "{x} {y} {z}");
             }
             assert_eq!(name(x, 73, z), "minecraft:air");
             let col = grid.get(x, z);
             assert!(w.surface.minecraft_biome_at(col, 68).ends_with("ocean"));
         }
     }
-    eprintln!("curtain: {falling} falling water, {foam} white water");
-    assert!(foam > 20 && falling > 20, "{foam} {falling}");
 
     // The ground around it.
     let kit = &w.surface.kit;
@@ -396,25 +382,16 @@ fn waterfalls_have_white_water_and_mist() {
         }
     }
 
-    // Mist, and no plants in the pool.
-    let (mut steam, mut mist) = (0, 0);
+    // Nothing white, and no plants in the pool.
     for (x, z) in rect.columns() {
-        for y in 60..80 {
+        for y in 55..85 {
             let n = name(x, y, z);
-            if n == "conquest:steam" || n == "conquest:white_cloud" {
-                let near = (24..=25)
-                    .flat_map(|cx| (12..=17).map(move |cz| (cx, cz)))
-                    .map(|(cx, cz)| (cx - x).pow(2) + (cz - z).pow(2))
-                    .min()
-                    .unwrap();
-                assert!(near <= falls::MIST_REACH.pow(2), "{n} at {x} {y} {z}");
-                assert!((65..=69).contains(&y), "{n} at {x} {y} {z}");
-                if n == "conquest:steam" {
-                    steam += 1;
-                } else {
-                    mist += 1;
-                }
-            }
+            assert!(
+                !["waterfall", "steam", "cloud", "foam"]
+                    .iter()
+                    .any(|w| n.contains(w)),
+                "{n} at {x} {y} {z}"
+            );
         }
         if (22..=27).contains(&x) && (12..=17).contains(&z) {
             let col = grid.get(x, z);
@@ -427,8 +404,6 @@ fn waterfalls_have_white_water_and_mist() {
             }
         }
     }
-    eprintln!("{steam} steam, {mist} mist");
-    assert!(steam + mist > 25 && steam > 5 && mist > 5, "{steam} {mist}");
 }
 
 /// Overlapping pieces agree on every block around a waterfall.
@@ -447,4 +422,55 @@ fn pieces_agree_over_a_waterfall() {
     for (x, z) in a.intersect(&b).columns() {
         assert_eq!(pa.column(x, z), pb.column(x, z), "differs at {x} {z}");
     }
+}
+
+/// A mountainside: Mountains rising along x, rough enough in places for stony ground and scree.
+fn mountainside(x: i32, z: i32) -> ColumnInfo {
+    let wave = ((z as f32) * 0.07).sin() * 3.0 + ((x as f32) * 0.05).cos() * 2.0;
+    ColumnInfo {
+        slope: 0.35 + 0.25 * ((x + 2 * z) as f32 * 0.03).sin().abs(),
+        moisture: 0.35,
+        rock: (((x - z) as f32) * 0.02).sin().max(0.0),
+        ..ColumnInfo::dry(110.0 + 0.45 * x as f32 + wave, Biome::Mountains)
+    }
+}
+
+/// Boulders on mountains are few and lie low: they stand at most two blocks out of the slope.
+#[test]
+fn mountain_boulders_are_few_and_low() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let w = World::new(&catalog, &palette);
+    let rect = Rect::new(0, 0, 200, 200);
+    let (bare, grid) = w.piece_of(rect, mountainside, false, false);
+    let (full, _) = w.piece_of(rect, mountainside, false, true);
+    let kit = &w.surface.kit;
+    let (mut rock, mut tallest, mut proud) = (0, 0, 0);
+    for (x, z) in rect.columns() {
+        let (gy, _) = grid.get(x, z).ground();
+        let mut top = None;
+        for y in gy..gy + 8 {
+            let id = full.get(x, y, z);
+            if id != bare.get(x, y, z) && kit.of_block(id).is_some_and(|(_, l)| l == 0) {
+                top = Some(y);
+            }
+        }
+        if let Some(t) = top {
+            rock += 1;
+            tallest = tallest.max(t - gy + 1);
+            if t - gy + 1 > 1 {
+                proud += 1;
+            }
+        }
+    }
+    let share = rock as f32 / rect.columns().count() as f32;
+    eprintln!(
+        "boulder columns {rock} ({:.2}%), {proud} over a block, tallest {tallest}",
+        share * 100.0
+    );
+    assert!(share < 0.004, "{rock}");
+    assert!(tallest <= 2, "{tallest}");
 }
