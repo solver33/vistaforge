@@ -37,6 +37,9 @@ pub(super) fn shape(species: Species, size: f32) -> (f32, f32) {
         Species::Willow => (6.0 + 11.0 * s, 3.5 + 7.5 * s),
         Species::Dead => (6.0 + 16.0 * s + 1.0, 2.5 + 7.0 * s + 1.0),
         Species::Bush => (1.5 + 2.0 * s, 1.2 + 2.0 * s),
+        Species::Palm => (3.0 + 12.0 * s + 2.0, 2.5 + 5.0 * s),
+        Species::Jungle => (8.0 + 22.0 * s + 1.5, 3.0 + 9.0 * s + 1.5),
+        Species::SnowySpruce => shape(Species::Spruce, size),
     }
 }
 
@@ -46,9 +49,11 @@ pub(super) fn plan(req: &TreeRequest) -> Plan {
     let wood = match req.species {
         Species::Oak | Species::Dead | Species::Bush => Wood::Oak,
         Species::Birch => Wood::Birch,
-        Species::Spruce => Wood::Spruce,
+        Species::Spruce | Species::SnowySpruce => Wood::Spruce,
         Species::Pine => Wood::Pine,
         Species::Willow => Wood::Willow,
+        Species::Palm => Wood::Palm,
+        Species::Jungle => Wood::Acacia,
     };
     let above = shape(req.species, s).0.ceil() as i32 + 6;
     let mut plan = Plan::new(MAX_REACH, BELOW, above, wood as u8);
@@ -71,6 +76,12 @@ pub(super) fn plan(req: &TreeRequest) -> Plan {
         Species::Willow => tree.willow(),
         Species::Dead => tree.dead(),
         Species::Bush => tree.bush(),
+        Species::Palm => tree.palm(),
+        Species::Jungle => tree.jungle(),
+        Species::SnowySpruce => {
+            tree.spruce();
+            plan.snow(0.85, req.seed);
+        }
     }
     plan
 }
@@ -120,6 +131,23 @@ struct Style {
     fork_r: f32,
     /// Levels of side branches.
     depth: u32,
+}
+
+/// The build of a spreading broadleaf (see [`Tree::spreading`]).
+struct Spread {
+    /// Height and crown radius in blocks, trunk diameter in pixels.
+    h: f32,
+    crown: f32,
+    d: f32,
+    /// Range of the trunk's height as a share of the tree's.
+    bole: (f32, f32),
+    /// Height of the crown's dome as a share of what is above the trunk.
+    dome: f32,
+    /// Big trees also send long, low limbs out of the trunk.
+    low_limbs: bool,
+    leaf: Leaf,
+    /// Height of a leaf clump as a share of its width.
+    flat: f32,
 }
 
 struct Tree<'p> {
@@ -504,12 +532,47 @@ impl Tree<'_> {
         if s < 0.12 {
             return self.sapling(Leaf::Oak, false);
         }
-        let h = 6.0 + 19.0 * s.powf(1.1);
-        let crown = 2.8 + 9.2 * s;
-        let d = 6.0 + 38.0 * s.powf(1.6);
+        self.spreading(Spread {
+            h: 6.0 + 19.0 * s.powf(1.1),
+            crown: 2.8 + 9.2 * s,
+            d: 6.0 + 38.0 * s.powf(1.6),
+            bole: (0.3, 0.4),
+            dome: 0.47,
+            low_limbs: true,
+            leaf: Leaf::Oak,
+            flat: 0.65,
+        });
+    }
+
+    /// Lush tropical broadleaf: a tall, clean, buttressed trunk that opens at the top into a
+    /// wide, flat crown of dense jungle leaves.
+    fn jungle(&mut self) {
+        let s = self.s;
+        if s < 0.12 {
+            return self.sapling(Leaf::Jungle, false);
+        }
+        self.spreading(Spread {
+            h: 8.0 + 22.0 * s,
+            crown: 3.0 + 9.0 * s,
+            d: 6.0 + 34.0 * s.powf(1.5),
+            bole: (0.5, 0.6),
+            dome: 0.3,
+            low_limbs: false,
+            leaf: Leaf::Jungle,
+            flat: 0.5,
+        });
+    }
+
+    /// A spreading broadleaf: a trunk that splits into crooked scaffold limbs, which fork
+    /// again into branches and twigs, under a dome of loose leaf clumps on the twig ends.
+    fn spreading(&mut self, look: Spread) {
+        let s = self.s;
+        let Spread { h, crown, d, .. } = look;
         self.centre_trunk(d);
         let r0 = d / 32.0;
-        let trunk_h = (h * self.between(0.3, 0.4)).round().max(2.0) as i32;
+        let trunk_h = (h * self.between(look.bole.0, look.bole.1))
+            .round()
+            .max(2.0) as i32;
         let (lean_az, lean) = (self.f() * TAU, self.between(0.0, 0.1) * trunk_h as f32);
         let flare = d >= 12.0;
         let moss = if s > 0.55 && self.chance(0.6) {
@@ -532,7 +595,7 @@ impl Tree<'_> {
         );
         let r_top = r0 * 0.7 * 16.0;
         // The crown: a dome, wider than tall, whose top is the tree's height.
-        let ry = ((h - trunk_h as f32) * 0.47).max(1.6);
+        let ry = ((h - trunk_h as f32) * look.dome).max(1.6);
         let rx = (crown - 1.8).clamp(1.6, MAX_REACH as f32 - 3.5);
         let c = [top[0], self.y as f32 + h - ry - 1.0, top[2]];
         let mut nodes: Vec<Node> = (trunk_h * 2 / 3..trunk_h)
@@ -567,8 +630,7 @@ impl Tree<'_> {
             let limb = self.bough(start, r.max(3.0), end, 3.0, 0.1);
             nodes.extend(limb);
         }
-        // Big oaks also send out long, low limbs from the trunk.
-        if s > 0.55 {
+        if look.low_limbs && s > 0.55 {
             for _ in 0..self.rng.range(1, 2) {
                 let az = self.f() * TAU;
                 let at = trunk_h as f32 * self.between(0.6, 0.85);
@@ -582,14 +644,76 @@ impl Tree<'_> {
         let groups = targets.len() / 4;
         let clumps = Clumps {
             rx: (1.6 + 0.3 * s, 2.5 + 0.7 * s),
-            flat: 0.65,
+            flat: look.flat,
             lift: 0.4,
             holes: 0.26,
             share: 1.0,
         };
         self.crown(&mut nodes, &targets, groups, 0.12, clumps, |_| {
-            Leaf::Oak as u8
+            look.leaf as u8
         });
+    }
+
+    /// Palm: a slender trunk that curves away from its foot, under a star of long fronds that
+    /// rise from the crown and droop to their tips, and a few dry ones hanging below them.
+    fn palm(&mut self) {
+        let s = self.s;
+        let ht = (3.0 + 12.0 * s).round() as i32;
+        let r0 = (7.0 + 3.0 * s) / 32.0;
+        let (lean_az, lean) = (self.f() * TAU, self.between(0.4, 1.0) * (0.6 + 2.2 * s));
+        let top = self.trunk(
+            ht,
+            |t, level| r0 * (1.0 - 0.2 * t) * (1.0 + 0.5 * (-level / 0.8).exp()),
+            |t| {
+                let k = lean * t * t;
+                (k * lean_az.cos(), k * lean_az.sin())
+            },
+            0,
+        );
+        let heart = add(top, [0.0, 1.0, 0.0]);
+        let c = super::plan::cell_of(heart);
+        self.plan.put_leaves(c[0], c[1], c[2], Leaf::Date as u8);
+        let len = 1.8 + 3.2 * s;
+        let n = 6 + (3.0 * s) as i32;
+        let az0 = self.f() * TAU;
+        for i in 0..n {
+            let az = az0 + i as f32 * TAU / n as f32 + self.between(-0.25, 0.25);
+            let l = len * self.between(0.8, 1.1);
+            let lift = self.between(0.1, 0.35);
+            self.frond(heart, az, l, lift, Leaf::Frond, Leaf::FrondCorner);
+        }
+        if s > 0.3 {
+            for _ in 0..self.rng.range(1, 3) {
+                let az = self.f() * TAU;
+                let l = len * self.between(0.4, 0.6);
+                self.frond(top, az, l, -0.5, Leaf::OldFrond, Leaf::OldFrondCorner);
+            }
+        }
+    }
+
+    /// One palm frond out of `from` towards `az`, `len` blocks long: rising `lift` blocks per
+    /// block at first and drooping more and more towards the tip. Conquest's frond pieces
+    /// point one of eight ways: `leaf` along a side, `corner` between two.
+    fn frond(&mut self, from: V3, az: f32, len: f32, lift: f32, leaf: Leaf, corner: Leaf) {
+        // Eighths of a turn from east (+x) towards south (+z); SIDES runs north, east, south,
+        // west, and a corner piece is named after the first of its two sides.
+        let eighth = (az.rem_euclid(TAU) / (TAU / 8.0)).round() as i32 % 8;
+        let side = ((eighth / 2 + 1) % 4) as u8;
+        let first = if eighth % 2 == 0 { leaf } else { corner };
+        let piece = first as u8 + side;
+        let (dx, dz) = (az.cos(), az.sin());
+        let mut d = 0.6;
+        let mut last = None;
+        while d <= len {
+            let t = d / len;
+            let y = d * lift - 0.55 * len * t * t;
+            let c = super::plan::cell_of([from[0] + dx * d, from[1] + y, from[2] + dz * d]);
+            if last != Some(c) {
+                self.plan.put_leaves(c[0], c[1], c[2], piece);
+                last = Some(c);
+            }
+            d += 0.35;
+        }
     }
 
     /// Birch: a slim white trunk (sometimes two or three from one root) with many thin,
@@ -1224,15 +1348,7 @@ fn hash_bit(seed: u64) -> u64 {
 mod tests {
     use super::*;
 
-    const ALL: [Species; 7] = [
-        Species::Oak,
-        Species::Birch,
-        Species::Spruce,
-        Species::Pine,
-        Species::Willow,
-        Species::Dead,
-        Species::Bush,
-    ];
+    const ALL: &[Species] = Species::ALL;
 
     fn req(species: Species, size: f32, seed: u64) -> TreeRequest {
         TreeRequest {
@@ -1247,7 +1363,7 @@ mod tests {
 
     #[test]
     fn every_species_stays_in_reach_and_has_wood() {
-        for species in ALL {
+        for &species in ALL {
             for size in [0.0, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 1.0] {
                 for seed in 0..6 {
                     let r = req(species, size, seed * 7919 + 13);
@@ -1275,7 +1391,7 @@ mod tests {
 
     #[test]
     fn plans_depend_only_on_the_request() {
-        for species in ALL {
+        for &species in ALL {
             let r = req(species, 0.7, 42);
             let a: Vec<_> = plan(&r).cells().collect();
             let b: Vec<_> = plan(&r).cells().collect();

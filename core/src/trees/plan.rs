@@ -73,6 +73,8 @@ pub(super) enum Piece {
     Empty,
     /// Leaves; the index picks the block from `super::Leaf`.
     Leaves(u8),
+    /// Snow lying on the leaves below, 1 or 2 layers (2 or 4 px) deep.
+    Snow(u8),
     /// A wall-like branch piece; its arms and post are worked out when it is written.
     Branch(Thick),
     /// A round post in the middle of the cell (`*_log_pillar`, `layer` 1..=5).
@@ -102,7 +104,7 @@ pub(super) const SIDES: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
 impl Piece {
     pub(super) fn is_wood(self) -> bool {
-        !matches!(self, Piece::Empty | Piece::Leaves(_))
+        !matches!(self, Piece::Empty | Piece::Leaves(_) | Piece::Snow(_))
     }
 
     /// Pieces that Conquest can stretch down into a layer block below (`down=true`, or
@@ -127,7 +129,8 @@ impl Piece {
     fn rank(self) -> u32 {
         match self {
             Piece::Empty => 0,
-            Piece::Leaves(_) => 1,
+            Piece::Snow(_) => 1,
+            Piece::Leaves(_) => 2,
             // A branch beats a pillar of the same width: its arms connect.
             Piece::Branch(t) => 9 + t.width() as u32,
             Piece::Pillar(l) => 8 + PILLAR_PX[l as usize - 1] as u32,
@@ -308,6 +311,25 @@ impl Plan {
             let j = n / (self.sx * self.sz);
             Some((self.x0 + i, self.y0 + j, self.z0 + k, *c))
         })
+    }
+
+    /// Snow on the leaves: on each leaf cell with nothing on top, `share` of the time, a
+    /// layer or two of snow.
+    pub fn snow(&mut self, share: f32, seed: u64) {
+        let tops: Vec<[i32; 3]> = self
+            .cells()
+            .filter(|&(x, y, z, c)| {
+                matches!(c.piece, Piece::Leaves(_)) && self.piece(x, y + 1, z) == Piece::Empty
+            })
+            .map(|(x, y, z, _)| [x, y + 1, z])
+            .collect();
+        for [x, y, z] in tops {
+            let u = unit3(seed ^ 0x5_0e, x, y, z);
+            if u < share {
+                let layers = 1 + (u < share * 0.4) as u8;
+                self.put(x, y, z, Piece::Snow(layers));
+            }
+        }
     }
 
     /// The lowest leaf cell in a column.
@@ -696,7 +718,7 @@ fn candidates() -> &'static [(Piece, Mask)] {
 /// The pixels a piece covers seen from above (a branch by its post).
 fn footprint(piece: Piece) -> Option<Mask> {
     match piece {
-        Piece::Empty | Piece::Leaves(_) => None,
+        Piece::Empty | Piece::Leaves(_) | Piece::Snow(_) => None,
         Piece::Log | Piece::Wood => Some([u64::MAX; 4]),
         Piece::Branch(t) => {
             let (a, b) = (8 - t.width() as i32 / 2, 8 + t.width() as i32 / 2);

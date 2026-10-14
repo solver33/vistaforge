@@ -16,10 +16,12 @@ pub(super) enum Wood {
     Spruce = 4,
     Pine = 6,
     Willow = 8,
+    Palm = 10,
+    Acacia = 12,
 }
 
 /// Catalog names of each wood type, in index order: the plain wood, then its mossy variant.
-const WOODS: [&str; 10] = [
+const WOODS: [&str; 14] = [
     "oak",
     "mossy_oak",
     "birch",
@@ -30,7 +32,16 @@ const WOODS: [&str; 10] = [
     "mossy_pine",
     "willow",
     "mossy_willow",
+    "palm",
+    "mossy_palm",
+    "acacia",
+    "mossy_acacia",
 ];
+
+/// Woods whose Conquest pieces have no full log of their own: the log and bark blocks their
+/// pieces are textured after.
+const STAND_INS: [(&str, &str, &str); 1] =
+    [("palm", "minecraft:jungle_log", "minecraft:jungle_wood")];
 
 /// Leaf blocks; [`Piece::Leaves`] holds the index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,9 +57,20 @@ pub(super) enum Leaf {
     Twigs,
     Hawthorn,
     Lilac,
+    /// The heart of a palm crown (`date_palm_leaves`, without dates).
+    Date,
+    Jungle,
+    /// A green palm frond pointing north; the next three point east, south and west (see
+    /// [`SIDES`]).
+    Frond,
+    /// A green palm frond pointing between north and east; the next three turn on clockwise.
+    FrondCorner = Leaf::Frond as isize + 4,
+    /// Dry, hanging fronds, laid out like the green ones.
+    OldFrond = Leaf::Frond as isize + 8,
+    OldFrondCorner = Leaf::Frond as isize + 12,
 }
 
-const LEAVES: [(&str, &[(&str, &str)]); 9] = [
+const LEAVES: [(&str, &[(&str, &str)]); 11] = [
     ("minecraft:oak_leaves", &[]),
     ("minecraft:birch_leaves", &[]),
     ("minecraft:spruce_leaves", &[]),
@@ -58,7 +80,22 @@ const LEAVES: [(&str, &[(&str, &str)]); 9] = [
     ("conquest:dead_deciduous_branches", &[]),
     ("conquest:hawthorn_bush", &[]),
     ("conquest:lilac", &[]),
+    ("conquest:date_palm_leaves", &[("age", "0")]),
+    ("minecraft:jungle_leaves", &[]),
 ];
+
+/// Palm fronds, after the plain leaves: each in four directions.
+const FRONDS: [&str; 4] = [
+    "conquest:caribbean_royal_palm_leaves",
+    "conquest:caribbean_royal_palm_leaves_corner",
+    "conquest:old_caribbean_royal_palm_leaves",
+    "conquest:old_caribbean_royal_palm_leaves_corner",
+];
+
+/// Conquest's `facing` for a frond pointing each way (see [`SIDES`]); for a corner frond, the
+/// first of the two sides it points between. Unconfirmed in game: if fronds point back at
+/// the trunk, turn this round.
+const FROND_FACING: [&str; 4] = ["north", "east", "south", "west"];
 
 fn flag(v: bool) -> &'static str {
     if v {
@@ -93,15 +130,20 @@ const SLAB_FACING: [&str; 4] = ["south", "west", "north", "east"];
 
 impl Kit {
     fn new(b: &Blocks, wood: &str) -> Result<Self> {
+        let stand_in = STAND_INS.iter().find(|s| s.0 == wood);
         let log = match format!("minecraft:{wood}_log") {
             vanilla if b.has(&vanilla) => vanilla,
-            _ => format!("conquest:{wood}_log"),
+            _ => match stand_in {
+                Some(s) => s.1.to_string(),
+                None => format!("conquest:{wood}_log"),
+            },
         };
         let bark = [
             format!("conquest:{wood}_log_bark"),
             format!("minecraft:{wood}_wood"),
         ]
         .into_iter()
+        .chain(stand_in.map(|s| s.2.to_string()))
         .find(|n| b.has(n))
         .unwrap_or_else(|| log.clone());
         let piece = |kind: &str| format!("conquest:{wood}_log_{kind}");
@@ -184,7 +226,7 @@ impl Kit {
     ) -> BlockId {
         let (d, w) = (down as usize, wet as usize);
         match piece {
-            Piece::Empty | Piece::Leaves(_) => AIR,
+            Piece::Empty | Piece::Leaves(_) | Piece::Snow(_) => AIR,
             Piece::Log => self.log,
             Piece::Wood => self.bark,
             Piece::Pillar(l) if stump => self.stump[l as usize - 1][d][w],
@@ -215,6 +257,9 @@ impl Kit {
 pub(super) struct Kits {
     pub woods: Vec<Kit>,
     pub leaves: Vec<BlockId>,
+    /// Snow lying on a tree, by [`Piece::Snow`] layers: Conquest snow slabs, so they never
+    /// pass for the snow on the ground.
+    pub snow: [BlockId; 2],
     pub water: BlockId,
     /// All of the above but water: what another tree may have left in the world.
     tree: HashSet<BlockId>,
@@ -232,14 +277,32 @@ impl Kits {
             props.extend_from_slice(extra);
             leaves.push(b.id(name, &props)?);
         }
+        for name in FRONDS {
+            for facing in FROND_FACING {
+                leaves.push(b.id(name, &[("facing", facing)])?);
+            }
+        }
+        let snow_slab = |layers| {
+            b.id(
+                "conquest:snow_slab",
+                &[
+                    ("layers", layers),
+                    ("type", "bottom"),
+                    ("waterlogged", "false"),
+                ],
+            )
+        };
+        let snow = [snow_slab("1")?, snow_slab("2")?];
         let tree = woods
             .iter()
             .flat_map(|k| k.all())
             .chain(leaves.iter().copied())
+            .chain(snow)
             .collect();
         Ok(Self {
             woods,
             leaves,
+            snow,
             water: b.id("minecraft:water", &[("level", "0")])?,
             tree,
         })
@@ -253,6 +316,16 @@ impl Kits {
     pub fn is_leaves(&self, id: BlockId) -> bool {
         self.leaves.contains(&id)
     }
+
+    /// Snow some tree left on its leaves.
+    pub fn is_snow(&self, id: BlockId) -> bool {
+        self.snow.contains(&id)
+    }
 }
 
-const _: () = assert!(SIDES.len() == 4 && LEAVES.len() == Leaf::Lilac as usize + 1);
+const _: () = assert!(
+    SIDES.len() == 4
+        && FROND_FACING.len() == SIDES.len()
+        && LEAVES.len() == Leaf::Frond as usize
+        && Leaf::OldFrondCorner as usize + 4 == LEAVES.len() + 4 * FRONDS.len()
+);
