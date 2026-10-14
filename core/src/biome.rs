@@ -35,6 +35,14 @@ pub enum Biome {
     Beach,
     River,
     Lake,
+    /// Hot, humid lowland with palms and lush broadleaf growth.
+    Tropical,
+    /// Spruce forest under snow.
+    SnowyTaiga,
+    /// Cold, treeless open ground with frozen ponds.
+    Tundra,
+    /// Ash, basalt and scree around a volcano; no trees.
+    Volcanic,
 }
 
 impl Biome {
@@ -54,6 +62,10 @@ impl Biome {
         Biome::Beach,
         Biome::River,
         Biome::Lake,
+        Biome::Tropical,
+        Biome::SnowyTaiga,
+        Biome::Tundra,
+        Biome::Volcanic,
     ];
 
     /// Stable id used in settings files and the app.
@@ -74,6 +86,10 @@ impl Biome {
             Biome::Beach => "beach",
             Biome::River => "river",
             Biome::Lake => "lake",
+            Biome::Tropical => "tropical",
+            Biome::SnowyTaiga => "snowy_taiga",
+            Biome::Tundra => "tundra",
+            Biome::Volcanic => "volcanic",
         }
     }
 
@@ -95,11 +111,27 @@ impl Biome {
             Biome::Beach => "Beach",
             Biome::River => "River",
             Biome::Lake => "Lake",
+            Biome::Tropical => "Tropical",
+            Biome::SnowyTaiga => "Snowy taiga",
+            Biome::Tundra => "Tundra",
+            Biome::Volcanic => "Volcanic",
         }
     }
 
     pub fn from_id(id: &str) -> Option<Biome> {
         Biome::ALL.iter().copied().find(|b| b.id() == id)
+    }
+
+    /// The nearest of the original fifteen biomes. Modules that don't handle a newer biome yet
+    /// match on this instead, until they get their own arms for it.
+    pub fn fallback(self) -> Biome {
+        match self {
+            Biome::Tropical => Biome::Forest,
+            Biome::SnowyTaiga => Biome::Taiga,
+            Biome::Tundra => Biome::SnowyPeaks,
+            Biome::Volcanic => Biome::Mountains,
+            b => b,
+        }
     }
 
     /// Biomes made by the terrain itself (water and shores) rather than chosen in a biome mix.
@@ -111,6 +143,14 @@ impl Biome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallbacks_are_original_biomes() {
+        for &b in Biome::ALL {
+            assert!(Biome::ALL[..15].contains(&b.fallback()), "{b:?}");
+        }
+        assert_eq!(Biome::Forest.fallback(), Biome::Forest);
+    }
 
     #[test]
     fn ids_round_trip() {

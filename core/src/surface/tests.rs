@@ -30,7 +30,7 @@ pub(crate) fn region_biome(rx: i32, rz: i32) -> Biome {
 
 fn biome_height(b: Biome, seed: u64, x: f64, z: f64) -> f64 {
     let n = |s: u64, scale: f64, oct: u32| fbm2(seed ^ s, x / scale, z / scale, oct);
-    match b {
+    match b.fallback() {
         Biome::Plains | Biome::Meadow => 66.5 + 3.0 * n(1, 60.0, 3) + 0.8 * n(2, 12.0, 2),
         Biome::Forest | Biome::BirchForest | Biome::Taiga => {
             68.0 + 5.0 * n(1, 70.0, 3) + 1.0 * n(2, 15.0, 2)
@@ -59,6 +59,9 @@ fn biome_height(b: Biome, seed: u64, x: f64, z: f64) -> f64 {
             );
             let d = (lx * lx + lz * lz).sqrt() / 36.0;
             66.0 + 1.5 * n(1, 30.0, 2) - 9.0 * (1.0 - d.min(1.0)).powf(0.7)
+        }
+        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
+            unreachable!("fallback() returns one of the original biomes")
         }
     }
 }
