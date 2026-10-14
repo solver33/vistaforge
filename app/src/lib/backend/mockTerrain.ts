@@ -3,7 +3,7 @@
 // core/src/terrain.
 
 import { biomeColor } from '../palette';
-import { distToLine, isLine } from '../edits';
+import { distToLine, distToSegment, isLine, waterfallShape } from '../edits';
 import type { BiomeShare, PreviewData, WorldSettings } from '../types';
 
 interface Profile {
@@ -136,6 +136,7 @@ export function mockPreview(settings: WorldSettings, res: number, biomeIds: stri
   const biomeOf: string[] = new Array(n);
   const treeChance = new Float32Array(n);
   const species: string[][] = new Array(n);
+  const road = new Uint8Array(n);
 
   for (let j = 0; j < res; j++) {
     for (let i = 0; i < res; i++) {
@@ -195,7 +196,10 @@ export function mockPreview(settings: WorldSettings, res: number, biomeIds: stri
   }
 
   // Hand-placed landforms.
+  const at = (x: number, z: number) =>
+    Math.min(res - 1, Math.max(0, Math.floor(z / step))) * res + Math.min(res - 1, Math.max(0, Math.floor(x / step)));
   for (const e of settings.edits) {
+    const lip = e.kind === 'waterfall' ? Math.round(heights[at(e.x, e.z)]) : 0;
     for (let j = 0; j < res; j++) {
       for (let i = 0; i < res; i++) {
         const k = j * res + i;
@@ -207,6 +211,9 @@ export function mockPreview(settings: WorldSettings, res: number, biomeIds: stri
           if (e.kind === 'ridge' && d < half) {
             const t = 1 - d / half;
             heights[k] += e.height * t * t * (0.75 + 0.5 * ridged(seed ^ 0x3c, x / 60, z / 60, 3));
+          } else if (e.kind === 'road' && d < half) {
+            road[k] = 1;
+            treeChance[k] = 0;
           } else if (e.kind === 'river' && d < half + 6) {
             const level = Math.min(heights[k], sea + 6) - 1;
             if (d < half) {
@@ -217,6 +224,18 @@ export function mockPreview(settings: WorldSettings, res: number, biomeIds: stri
             } else {
               heights[k] = Math.min(heights[k], level + (d - half) * 0.8);
             }
+          }
+        } else if (e.kind === 'waterfall') {
+          // A stream down to the lip and a pool `drop` below it.
+          const { spring, pool, poolRadius } = waterfallShape(e);
+          if (Math.hypot(x - pool[0], z - pool[1]) < poolRadius + step / 2) {
+            heights[k] = lip - e.drop - 2;
+            water[k] = lip - e.drop + 1;
+            treeChance[k] = 0;
+          } else if (distToSegment(x, z, spring, [e.x, e.z]) < e.radius + step / 2) {
+            heights[k] = lip - 1;
+            water[k] = lip + 1;
+            treeChance[k] = 0;
           }
         } else {
           const d = Math.hypot(x - e.x, z - e.z) / e.radius;
@@ -292,6 +311,7 @@ export function mockPreview(settings: WorldSettings, res: number, biomeIds: stri
         g += (242 - g) * t;
         b += (245 - b) * t;
       }
+      if (road[k] && !wet) [r, g, b] = [146, 116, 80];
       if (wet) {
         const depth = Math.min(1, (water[k] - h) / 8);
         r = 60 + 30 * (1 - depth);

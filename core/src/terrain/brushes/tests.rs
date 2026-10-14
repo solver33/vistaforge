@@ -194,28 +194,6 @@ fn brushes_keep_rivers_and_lakes_in() {
     }
 }
 
-#[test]
-#[ignore]
-fn debug_case() {
-    let base = presets::find("highlands").unwrap().settings("t", 384, 11);
-    let t = with(base.clone(), waterfall(160.0, 230.0, 2.0, 9.0, 37.0));
-    let plain = Terrain::new(&base, Quality::Full).unwrap();
-    for (cx, cz) in [(173, 251), (184, 241)] {
-        for z in cz - 2..=cz + 2 {
-            let mut line = String::new();
-            for x in cx - 2..=cx + 2 {
-                let (a, b) = (t.column(x, z), plain.column(x, z));
-                line += &format!(
-                    " [{:6.2} {:?} {:?} | {:6.2} {:?}]",
-                    a.height, a.water_level, a.water, b.height, b.water_level
-                );
-            }
-            println!("{z}: {line}");
-        }
-        println!();
-    }
-}
-
 /// Prints the blocks around a road and a waterfall in a generated piece (run with --ignored
 /// --nocapture; needs the catalog).
 #[test]
@@ -371,4 +349,80 @@ fn waterfall_sections() {
         }
         println!("{a}\n{b}");
     }
+}
+
+/// Leaks, curtains and what the roads are made of in a world saved by the app (run with
+/// --ignored --nocapture; `VF_SETTINGS` names the settings file; needs the catalog).
+#[test]
+#[ignore]
+fn brush_stats() {
+    use crate::catalog::Catalog;
+    use crate::engine::Generator;
+    let s: WorldSettings = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("VF_SETTINGS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let path = std::env::var("VISTAFORGE_CATALOG")
+        .unwrap_or("/mnt/project-files/vistaforge/catalog-cr-1.7.0.json".into());
+    let catalog = Catalog::load(std::path::Path::new(&path)).unwrap();
+    let g = Generator::new(&s, &catalog, Quality::Full).unwrap();
+    let mut plain_s = s.clone();
+    plain_s.edits.clear();
+    let pg = Generator::new(&plain_s, &catalog, Quality::Full).unwrap();
+    let rect = Rect::new(0, 0, s.size as i32, s.size as i32);
+    let piece = g.generate(rect);
+    let plain = pg.generate(rect);
+    println!(
+        "leaks {} (plain {})",
+        leaks(
+            &piece.grid,
+            Rect::new(1, 1, s.size as i32 - 1, s.size as i32 - 1)
+        )
+        .len(),
+        leaks(
+            &plain.grid,
+            Rect::new(1, 1, s.size as i32 - 1, s.size as i32 - 1)
+        )
+        .len()
+    );
+    let falls = piece
+        .grid
+        .columns
+        .iter()
+        .filter(|c| c.fall.is_some())
+        .count();
+    println!("curtain columns {falls}");
+    let (mut on, mut grown, mut blocks) = (0, 0, std::collections::BTreeMap::new());
+    for (x, z) in rect.columns() {
+        let c = piece.grid.get(x, z);
+        let Some(r) = c.road else { continue };
+        if r < 0.5 || c.is_wet() {
+            continue;
+        }
+        on += 1;
+        let (gy, layers) = c.ground();
+        let col = piece.area.column(x, z);
+        let at = |y: i32| {
+            col.get((y - crate::world::MIN_Y) as usize)
+                .copied()
+                .unwrap_or(crate::sink::AIR)
+        };
+        let gid = if layers > 0 { at(gy) } else { at(gy - 1) };
+        let above = at(if layers > 0 { gy + 1 } else { gy });
+        if above != crate::sink::AIR {
+            grown += 1;
+        }
+        let name = g.palette.with(gid, |st| {
+            st.name.trim_start_matches("conquest:").to_string()
+        });
+        let name = name
+            .trim_end_matches("_layer")
+            .trim_end_matches("_slab")
+            .to_string();
+        *blocks.entry(name).or_insert(0) += 1;
+    }
+    println!("road columns {on}, with something on them {grown}");
+    let mut v: Vec<_> = blocks.into_iter().collect();
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
+    println!("{v:?}");
 }

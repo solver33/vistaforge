@@ -211,6 +211,68 @@ test('draw a river with clicks and a double-click', async ({ page }) => {
   await expect(page.locator('[data-tool="select"]')).toHaveClass(/on/);
 });
 
+test('draw a road in one stroke, then widen it', async ({ page }) => {
+  const problems = await open(page);
+  await page.getByRole('button', { name: 'Map', exact: true }).click();
+  await page.locator('[data-tool="road"]').click();
+  const start = await mapPoint(page, 100, 500);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  // A gentle curve, drawn with many small moves.
+  for (let k = 1; k <= 40; k++) {
+    const p = await mapPoint(page, 100 + k * 20, 500 + 120 * Math.sin(k / 8));
+    await page.mouse.move(p.x, p.y);
+  }
+  await page.mouse.up();
+  const edits = page.getByTestId('edits');
+  await expect(edits).toContainText('Road');
+  await expect(edits).toContainText('5 wide');
+  // The stroke keeps the points that shape it, not one for every move.
+  const points = Number((await edits.textContent())!.match(/(\d+) points/)![1]);
+  expect(points).toBeGreaterThan(3);
+  expect(points).toBeLessThan(40);
+  await expect(page.locator('[data-tool="select"]')).toHaveClass(/on/);
+  await typeField(page, 'width', 60);
+  // Up to 20 blocks either side of the middle.
+  expect(await field(page, 'width')).toBe(40);
+  await expect(edits).toContainText('40 wide');
+  expect(problems).toEqual([]);
+});
+
+test('place a waterfall by dragging the way it flows, then turn it on the map', async ({ page }) => {
+  const problems = await open(page);
+  await page.getByRole('button', { name: 'Map', exact: true }).click();
+  await page.locator('[data-tool="waterfall"]').click();
+  const lip = await mapPoint(page, 512, 512);
+  const east = await mapPoint(page, 560, 512);
+  await page.mouse.move(lip.x, lip.y);
+  await page.mouse.down();
+  await page.mouse.move(east.x, east.y, { steps: 5 });
+  await page.mouse.up();
+  const edits = page.getByTestId('edits');
+  await expect(edits).toContainText('Waterfall');
+  expect(await field(page, 'angle')).toBe(0);
+  expect(await field(page, 'radius')).toBe(3);
+  await typeField(page, 'drop', 30);
+  await expect(edits).toContainText('30 drop, r 3');
+
+  // The round handle sits downstream; dragging it round to the south turns the flow south.
+  const box = (await page.getByTestId('view-map').locator('canvas').boundingBox())!;
+  const scale = (Math.min(box.width, box.height) * 0.92) / 1024;
+  const pool = Math.min(3 + 2.5 + 0.12 * 30, 3 + 14);
+  const reach = Math.max(2 * pool + 4, 32 / scale);
+  const handle = await mapPoint(page, 512 + reach, 512);
+  const south = await mapPoint(page, 512, 512 + reach);
+  await page.mouse.move(handle.x, handle.y);
+  await page.mouse.down();
+  await page.mouse.move(south.x, south.y, { steps: 8 });
+  await page.mouse.up();
+  expect(await field(page, 'angle')).toBe(90);
+  await page.getByTestId('undo').click();
+  expect(await field(page, 'angle')).toBe(0);
+  expect(problems).toEqual([]);
+});
+
 test('a click with the mountain tool places a mountain sized to the map', async ({ page }) => {
   await open(page);
   await page.locator('[data-tool="mountain"]').click();

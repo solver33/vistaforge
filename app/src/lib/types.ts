@@ -23,11 +23,15 @@ export type ShapeEdit =
   | { kind: 'lake'; x: number; z: number; radius: number; depth: number }
   | { kind: 'river'; points: Point[]; width: number; depth: number }
   | { kind: 'ridge'; points: Point[]; width: number; height: number }
-  | { kind: 'biome_zone'; x: number; z: number; radius: number; biome: BiomeId };
+  | { kind: 'biome_zone'; x: number; z: number; radius: number; biome: BiomeId }
+  | { kind: 'road'; points: Point[]; width: number }
+  /** At the lip; `radius` is half the width of the falling water, `angle` the flow in degrees (0 east, 90 south). */
+  | { kind: 'waterfall'; x: number; z: number; radius: number; drop: number; angle: number };
 
 export type EditKind = ShapeEdit['kind'];
 export type CircleEdit = Extract<ShapeEdit, { radius: number }>;
 export type LineEdit = Extract<ShapeEdit, { points: Point[] }>;
+export type Waterfall = Extract<ShapeEdit, { kind: 'waterfall' }>;
 
 /** How far up the world goes; the bottom is always Y -64. */
 export type WorldHeight = 'standard' | 'tall';

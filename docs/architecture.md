@@ -13,7 +13,9 @@ core/                 Rust library + `vistaforge` CLI (all generation logic)
   src/column.rs       Rect, ColumnInfo, ColumnGrid                   (contract)
   src/sink.rs         BlockId, Palette, Blocks, BlockSink            (contract)
   src/terrain/        land shape, water, biome layout, presets       (terrain)
+  src/terrain/brushes/ roads and waterfalls drawn in the app         (brushes)
   src/surface/        column blocks, Minecraft biome, preview colour (world detail)
+  src/surface/road.rs road ground: trodden earth, ruts, grassy edges (brushes)
   src/decor/          tree placement, plants, rocks, logs, debris    (world detail)
   src/trees/          species built from CR pieces                   (trees)
   src/engine/         pipeline, streaming export, preview            (engine)
@@ -70,6 +72,7 @@ vistaforge testworld --catalog <catalog.json> --out <saves folder>     # 256×25
 - CR layer blocks have `layers` 1–8. Plants (`PlantsDense`) take the `layers` value of the layer they stand on (8 on a full block).
 - `WorldSettings.world_height` is `standard` (Y −64 to 319) or `tall` (Y −64 to 2031, the most 1.20.1 allows). A tall world gets the data pack `datapacks/vistaforge-height`, which overrides `minecraft:overworld`'s dimension type, so no mod is needed. The game shows an "experimental settings" warning when such a world is opened. Fall3n checked a tall world in game on 2026-10-13: Distant Horizons draws the parts above Sodium's vertical render distance, and it ran at 71 FPS in 4K with shaders.
 - `Area` stores each column only up to the highest block set so far, in whole sections, and grows on demand; everything above is air. Code that reads `Area::column` must treat cells past the end of the slice as air. Terrain in a tall world may reach 20 blocks below the top (`Terrain::top`); standard worlds keep the 300 ceiling.
+- Roads and waterfalls (`ShapeEdit::Road`, `ShapeEdit::Waterfall`) are laid over the finished land inside `Terrain::sample`, in drawing order, after rivers and lakes. A column on or beside a road carries `ColumnInfo::road`: how far inside the road's edge it is, negative on the verge. Surface lays road earth from it, and decor keeps plants, trees, boulders and logs off it. A waterfall's water is ordinary river water, and its curtain is `ColumnInfo::fall`, as for the terrain's own falls.
 - CR branches connect only to the branch family. `up` is set when the block below is sturdy or a branch. A post on a log pillar is forced to `up=true`, which is a deliberate deviation.
 
 ## Workstreams
@@ -83,6 +86,7 @@ Each workstream has its own branch and owns its own directories. Every workstrea
 | World detail | `claude/world-detail` | `core/src/surface/**`, `core/src/decor/**` |
 | Trees | `claude/trees` | `core/src/trees/**` |
 | Desktop app | `claude/app` | `app/**`, `.github/workflows/app.yml` |
+| Brushes | `claude/brushes-*` | `core/src/terrain/brushes/**`, `core/src/surface/road.rs`; the road and waterfall tools in the app |
 
 **Terrain and presets**
 - Realistic land: warped and ridged noise, plus whole-map hydraulic and thermal erosion. Erosion may run coarse and be upsampled, with detail noise added on top.
@@ -108,6 +112,11 @@ Each workstream has its own branch and owns its own directories. Every workstrea
 - Thick trunks from pillars and vertical quarters, branch tips, roots and stumps.
 - A size range for every species.
 - Side renders of each species as evidence. Stay within `MAX_REACH`.
+
+**Brushes**
+- A road brush: medieval roads of mixed CR earth (coarse and loamy dirt, packed and dry mud, brown earth) with wheel ruts and grass growing in at the frayed edges, almost bare of plants, up to 40 blocks wide. The ground along a road is smoothed and the land beside it levelled, so it climbs and dips on layers.
+- A waterfall brush: a spring and stream above a cliff that falls a set drop into a pool, in plain water, with the land shaped to hold both and blend into what is around.
+- Hooks in other modules stay small: `Terrain::sample` calls `Brushes::apply`, `Surface::top` asks `RoadKit`, and decor skips road columns.
 
 **Desktop app**
 - Tauri 2, a TypeScript UI and a three.js preview. Webkit is missing in the cloud container, so the Tauri crate stays out of the root cargo workspace and builds on Windows CI. The UI is developed against a mocked backend.

@@ -17,7 +17,7 @@
   {/snippet}
   {#if app.settings.edits.length === 0}
     <p class="muted empty">
-      Place hills, mountains, plateaus, lakes, rivers, ridges and biome zones with the tools above the map.
+      Place hills, mountains, plateaus, lakes, rivers, ridges, roads, waterfalls and biome zones with the tools above the map.
     </p>
   {:else}
     <ul class="list" data-testid="edits">

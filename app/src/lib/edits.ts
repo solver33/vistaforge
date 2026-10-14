@@ -1,6 +1,6 @@
 // Landforms (ShapeEdits) placed on the map: defaults, labels, hit tests and moves.
 
-import type { BiomeId, CircleEdit, EditKind, LineEdit, Point, ShapeEdit } from './types';
+import type { BiomeId, CircleEdit, EditKind, LineEdit, Point, ShapeEdit, Waterfall } from './types';
 
 export interface KindInfo {
   kind: EditKind;
@@ -20,6 +20,22 @@ export const KINDS: KindInfo[] = [
   { kind: 'river', label: 'River', key: 'R', line: true, color: '#4f9fe8', help: 'Click points from the source to the mouth; double-click or Enter to finish.' },
   { kind: 'ridge', label: 'Ridge', key: 'G', line: true, color: '#b49a86', help: 'Click points along a mountain ridge; double-click or Enter to finish.' },
   { kind: 'biome_zone', label: 'Biome zone', key: 'B', line: false, color: '#c58fd6', help: 'Drag out a circle that forces one biome.' },
+  {
+    kind: 'road',
+    label: 'Road',
+    key: 'D',
+    line: true,
+    color: '#b08a5a',
+    help: 'Drag to draw a road, or click points and double-click or press Enter to finish. The ground beside it is levelled.',
+  },
+  {
+    kind: 'waterfall',
+    label: 'Waterfall',
+    key: 'W',
+    line: false,
+    color: '#7cc8ec',
+    help: 'Click where the water should fall, or drag the way it flows. A stream falls the given drop into a pool.',
+  },
 ];
 
 export function kindInfo(kind: EditKind): KindInfo {
@@ -34,6 +50,18 @@ export function isCircle(edit: ShapeEdit): edit is CircleEdit {
   return 'radius' in edit;
 }
 
+export function isWaterfall(edit: ShapeEdit): edit is Waterfall {
+  return edit.kind === 'waterfall';
+}
+
+export type LineKind = LineEdit['kind'];
+/** Landforms dragged out as a circle. */
+export type CircleKind = Exclude<CircleEdit['kind'], 'waterfall'>;
+
+export function isLineKind(kind: EditKind): kind is LineKind {
+  return kind === 'river' || kind === 'ridge' || kind === 'road';
+}
+
 /** What a newly placed landform starts with, scaled to the map. */
 export interface PlaceContext {
   size: number;
@@ -44,7 +72,7 @@ export interface PlaceContext {
 }
 
 export function newCircle(
-  kind: Exclude<EditKind, 'river' | 'ridge'>,
+  kind: CircleKind,
   x: number,
   z: number,
   radius: number,
@@ -65,11 +93,79 @@ export function newCircle(
   }
 }
 
-export function newLine(kind: 'river' | 'ridge', points: Point[], size: number): LineEdit {
+export function newLine(kind: LineKind, points: Point[], size: number): LineEdit {
   const pts = points.map(([x, z]) => [Math.round(x), Math.round(z)] as Point);
-  return kind === 'river'
-    ? { kind, points: pts, width: Math.round(Math.max(6, Math.min(24, size / 120))), depth: 4 }
-    : { kind, points: pts, width: Math.round(Math.max(48, size / 14)), height: 90 };
+  switch (kind) {
+    case 'river':
+      return { kind, points: pts, width: Math.round(Math.max(6, Math.min(24, size / 120))), depth: 4 };
+    case 'ridge':
+      return { kind, points: pts, width: Math.round(Math.max(48, size / 14)), height: 90 };
+    case 'road':
+      return { kind, points: pts, width: 5 };
+  }
+}
+
+/** A waterfall at its lip, flowing towards `angle` degrees. */
+export function newWaterfall(x: number, z: number, angle: number, drop: number): Waterfall {
+  return { kind: 'waterfall', x, z, radius: 3, drop: Math.round(drop), angle: Math.round(((angle % 360) + 360) % 360) };
+}
+
+/** Flow direction of a waterfall, as a unit vector. */
+export function flow(e: Waterfall): Point {
+  const a = (e.angle * Math.PI) / 180;
+  return [Math.cos(a), Math.sin(a)];
+}
+
+/**
+ * Where a waterfall's stream starts (its spring) and its pool lies, and the pool's radius, as
+ * the core lays them out (core/src/terrain/brushes/waterfall.rs).
+ */
+export function waterfallShape(e: Waterfall): { spring: Point; pool: Point; poolRadius: number } {
+  const half = Math.max(1, Math.min(20, e.radius));
+  const drop = Math.max(3, e.drop);
+  const pool = Math.min(half + 2.5 + 0.12 * drop, half + 14);
+  const run = Math.max(14, Math.min(64, 3 * half + 12 + 0.2 * drop));
+  const [ux, uz] = flow(e);
+  return { spring: [e.x - ux * run, e.z - uz * run], pool: [e.x + ux * pool, e.z + uz * pool], poolRadius: pool };
+}
+
+/** The handle that turns a waterfall: downstream past its pool, at least `4 * tol` from the lip. */
+export function waterfallHandle(e: Waterfall, tol: number): Point {
+  const { poolRadius } = waterfallShape(e);
+  const [ux, uz] = flow(e);
+  const d = Math.max(2 * poolRadius + 4, 4 * tol);
+  return [e.x + ux * d, e.z + uz * d];
+}
+
+/** The angle, in whole degrees 0 to 359, of the direction from (x0, z0) to (x1, z1). */
+export function angleTo(x0: number, z0: number, x1: number, z1: number): number {
+  const a = Math.round((Math.atan2(z1 - z0, x1 - x0) * 180) / Math.PI);
+  return (a + 360) % 360;
+}
+
+/** Fewer points along a freehand stroke, none of them moving the line more than `tol` blocks. */
+export function simplify(points: Point[], tol: number): Point[] {
+  if (points.length <= 2) return points.slice();
+  const keep = new Array(points.length).fill(false);
+  keep[0] = keep[points.length - 1] = true;
+  const stack: [number, number][] = [[0, points.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    let worst = -1;
+    let at = -1;
+    for (let i = a + 1; i < b; i++) {
+      const d = distToSegment(points[i][0], points[i][1], points[a], points[b]);
+      if (d > worst) {
+        worst = d;
+        at = i;
+      }
+    }
+    if (worst > tol) {
+      keep[at] = true;
+      stack.push([a, at], [at, b]);
+    }
+  }
+  return points.filter((_, i) => keep[i]);
 }
 
 /** The smallest radius a dragged circle gets, so a click still makes something usable. */
@@ -95,6 +191,10 @@ export function describe(edit: ShapeEdit, biomeName: (id: BiomeId) => string): s
       return `${edit.points.length} points, ${edit.height} high`;
     case 'biome_zone':
       return `${biomeName(edit.biome)}, r ${edit.radius}`;
+    case 'road':
+      return `${edit.points.length} points, ${edit.width} wide`;
+    case 'waterfall':
+      return `${edit.drop} drop, r ${edit.radius}`;
   }
 }
 
@@ -117,7 +217,7 @@ export function distToLine(px: number, pz: number, points: Point[]): number {
 }
 
 /** Which part of an edit is under a point. */
-export type Part = { kind: 'body' } | { kind: 'radius' } | { kind: 'vertex'; index: number };
+export type Part = { kind: 'body' } | { kind: 'radius' } | { kind: 'angle' } | { kind: 'vertex'; index: number };
 
 export interface Hit {
   index: number;
@@ -134,6 +234,9 @@ export function hitTest(edits: ShapeEdit[], x: number, z: number, tol: number, s
     if (isLine(e)) {
       const v = e.points.findIndex(([px, pz]) => Math.hypot(px - x, pz - z) <= tol);
       if (v >= 0) return { index: selected, part: { kind: 'vertex', index: v } };
+    } else if (isWaterfall(e)) {
+      const [hx, hz] = waterfallHandle(e, tol);
+      if (Math.hypot(hx - x, hz - z) <= tol) return { index: selected, part: { kind: 'angle' } };
     } else {
       if (Math.hypot(e.x + e.radius - x, e.z - z) <= tol) return { index: selected, part: { kind: 'radius' } };
     }
@@ -142,6 +245,12 @@ export function hitTest(edits: ShapeEdit[], x: number, z: number, tol: number, s
     const e = edits[i];
     if (isLine(e)) {
       if (distToLine(x, z, e.points) <= Math.max(tol, e.width / 2)) return { index: i, part: { kind: 'body' } };
+    } else if (isWaterfall(e)) {
+      const { spring, pool, poolRadius } = waterfallShape(e);
+      const stream = distToSegment(x, z, spring, [e.x, e.z]) <= Math.max(tol, e.radius + 2);
+      if (stream || Math.hypot(pool[0] - x, pool[1] - z) <= Math.max(tol, poolRadius)) {
+        return { index: i, part: { kind: 'body' } };
+      }
     } else if (Math.hypot(e.x - x, e.z - z) <= Math.max(e.radius, tol)) {
       return { index: i, part: { kind: 'body' } };
     }
@@ -162,5 +271,7 @@ export function rounded(edit: ShapeEdit): ShapeEdit {
   if (isLine(edit)) {
     return { ...edit, points: edit.points.map(([x, z]) => [Math.round(x), Math.round(z)] as Point) };
   }
-  return { ...edit, x: Math.round(edit.x), z: Math.round(edit.z), radius: Math.max(1, Math.round(edit.radius)) };
+  const out = { ...edit, x: Math.round(edit.x), z: Math.round(edit.z), radius: Math.max(1, Math.round(edit.radius)) };
+  if (out.kind === 'waterfall') out.angle = (Math.round(out.angle) + 360) % 360;
+  return out;
 }
