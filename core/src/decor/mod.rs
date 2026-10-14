@@ -36,6 +36,7 @@ use crate::sink::{BlockId, BlockSink, Blocks, AIR};
 use crate::surface::field::{hash_unit, patch, pick, unit};
 use crate::surface::geology::SUITES;
 use crate::surface::materials::Kind;
+use crate::surface::road;
 use crate::surface::{Surface, Top, Zone};
 use crate::trees::TreeRequest;
 
@@ -355,6 +356,9 @@ impl Decor {
         let Some(col) = grid.try_get(x, z) else {
             return;
         };
+        if col.road.is_some_and(|r| road::bare(self.seed, x, z, r)) {
+            return;
+        }
         let Some(spot) = self.spot(x, z, col, sink) else {
             return;
         };

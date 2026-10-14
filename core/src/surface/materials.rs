@@ -187,6 +187,11 @@ const SPECS: &[Spec<'static>] = &[
     spec!("lichen_dirt", "conquest:lichen_loamy_dirt", Slab("conquest:lichen_loamy_dirt_slab"), Soil),
     spec!("frozen_dirt", "conquest:frozen_loamy_dirt", Slab("conquest:frozen_loamy_dirt_slab"), Soil),
 
+    // Trodden earth for roads.
+    spec!("loamy_dirt", "minecraft:dirt", Slab("conquest:loamy_dirt_slab"), Soil),
+    spec!("packed_mud", "minecraft:packed_mud", Slab("conquest:packed_mud_slab"), Soil),
+    spec!("dry_mud", "conquest:dry_mud", Slab("conquest:dry_mud_slab"), Soil),
+
     // Mud, peat, silt and clay.
     spec!("mud", "conquest:mud", Slab("conquest:mud_slab"), Mud),
     spec!("thick_mud", "conquest:thick_mud", Slab("conquest:thick_mud_slab"), Mud),

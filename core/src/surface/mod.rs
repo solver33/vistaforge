@@ -19,6 +19,7 @@ pub(crate) mod field;
 pub(crate) mod geology;
 pub(crate) mod materials;
 pub(crate) mod recipes;
+pub(crate) mod road;
 
 use anyhow::Result;
 
@@ -37,6 +38,7 @@ fn wetland(b: Biome) -> bool {
 use geology::{Geology, Strata};
 use materials::{Kind, Kit, Mat};
 use recipes::{recipe, Mix};
+use road::RoadKit;
 
 /// Stands in a mix for the local geology's loose rock.
 const DEBRIS: Mat = Mat(u16::MAX);
@@ -154,6 +156,7 @@ pub struct Surface {
     swamp_beds: [RMix; 3],
     fall_bed: RMix,
     fall_bank: RMix,
+    roads: RoadKit,
     snow: Mat,
     bedrock: BlockId,
     deep: BlockId,
@@ -211,6 +214,7 @@ impl Surface {
             swamp_beds: beds(recipes::swamp_beds()),
             fall_bed: rmix(&recipes::FALL_BED),
             fall_bank: rmix(&recipes::FALL_BANK),
+            roads: RoadKit::new(&kit),
             recipes,
             geology,
             snow: kit.get("snow"),
@@ -369,6 +373,12 @@ impl Surface {
                     _ => rock,
                 }
             }
+        };
+        // A road lays its earth over the land's ground.
+        let road = col.road.filter(|_| !col.is_wet());
+        let (zone, mat) = match road.and_then(|r| self.roads.ground(self.seed, x, z, col, r)) {
+            Some(m) => (Zone::Open, m),
+            None => (zone, mat),
         };
         Top {
             zone,

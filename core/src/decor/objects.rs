@@ -259,6 +259,9 @@ impl Objects {
         sink: &mut dyn BlockSink,
     ) {
         let (x, z, h) = self.anchor(gx, gz);
+        if crate::surface::road::near(grid, x, z, 4) {
+            return;
+        }
         let Some(top) = surface.top_at(x, z, grid) else {
             return;
         };

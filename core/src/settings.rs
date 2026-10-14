@@ -216,6 +216,26 @@ pub enum ShapeEdit {
         radius: f32,
         biome: Biome,
     },
+    /// A road along a polyline: trodden earth with wheel ruts, laid into the ground (which is
+    /// levelled a little beside it), with almost nothing growing on it.
+    Road {
+        points: Vec<[f32; 2]>,
+        /// Width of the road surface in blocks.
+        width: f32,
+    },
+    /// A waterfall: a stream pours over a cliff `drop` blocks high into a pool at its foot.
+    Waterfall {
+        /// The lip, where the water goes over the edge.
+        x: f32,
+        z: f32,
+        /// Half the width of the falling water, in blocks.
+        radius: f32,
+        /// Height of the fall in blocks.
+        drop: f32,
+        /// Direction the water flows over the lip, in degrees: 0 towards +x (east), 90 towards
+        /// +z (south).
+        angle: f32,
+    },
 }
 
 /// A named starting point for [`WorldSettings`].
@@ -260,8 +280,21 @@ mod tests {
             width: 12.0,
             depth: 3.0,
         });
+        s.edits.push(ShapeEdit::Road {
+            points: vec![[5.0, 5.0], [50.0, 80.0]],
+            width: 5.0,
+        });
+        s.edits.push(ShapeEdit::Waterfall {
+            x: 300.0,
+            z: 200.0,
+            radius: 4.0,
+            drop: 18.0,
+            angle: 90.0,
+        });
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"kind\":\"river\""));
+        assert!(json.contains("\"kind\":\"road\""));
+        assert!(json.contains("\"kind\":\"waterfall\""));
         assert_eq!(serde_json::from_str::<WorldSettings>(&json).unwrap(), s);
         // Old files without newer fields still load.
         let partial: WorldSettings = serde_json::from_str(r#"{"size": 512}"#).unwrap();
