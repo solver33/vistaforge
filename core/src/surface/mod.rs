@@ -12,6 +12,10 @@
 //! plunge pool below is scoured to dark mossy stones, and the spray keeps the ground beside it
 //! wet and mossy.
 //!
+//! Cold biomes (tundra, snowy taiga) lie under snow, and their water freezes: lakes and ponds
+//! all over, rivers and the sea from the banks out. Volcanic land stands on basalt and tuff and
+//! keeps black sand and dark gravel at its water.
+//!
 //! [`Surface::fill`] depends only on the seed, the column position and the columns within
 //! [`NEAR`] blocks of it, so overlapping pieces of the map agree.
 
@@ -34,6 +38,26 @@ use field::{dither, hash_unit, local_biome, patch, pick, smoothstep, woodland};
 
 fn wetland(b: Biome) -> bool {
     matches!(b, Biome::Swamp | Biome::Marsh)
+}
+
+/// Biomes whose beaches, shores and water beds keep their own ground (black sand, frozen
+/// gravel, snow) instead of the usual sand.
+fn own_shores(b: Biome) -> bool {
+    matches!(b, Biome::Volcanic | Biome::Tundra | Biome::SnowyTaiga)
+}
+
+/// Biomes whose water freezes over.
+pub(crate) fn freezes(b: Biome) -> bool {
+    matches!(b, Biome::Tundra | Biome::SnowyTaiga)
+}
+
+/// The biome of the land a column belongs to: for water and beaches, the land around them.
+pub(crate) fn land_of(col: &ColumnInfo) -> Biome {
+    if matches!(col.biome, Biome::River | Biome::Lake | Biome::Beach) {
+        col.biome2
+    } else {
+        col.biome
+    }
 }
 use geology::{Geology, Strata};
 use materials::{Kind, Kit, Mat};
@@ -158,6 +182,7 @@ pub struct Surface {
     fall_bank: RMix,
     roads: RoadKit,
     snow: Mat,
+    ice: BlockId,
     bedrock: BlockId,
     deep: BlockId,
     water: BlockId,
@@ -218,6 +243,7 @@ impl Surface {
             recipes,
             geology,
             snow: kit.get("snow"),
+            ice: b.default_id("minecraft:ice")?,
             bedrock: b.default_id("minecraft:bedrock")?,
             deep: b.default_id("minecraft:stone")?,
             water: b.id("minecraft:water", &[("level", "0")])?,
@@ -307,18 +333,15 @@ impl Surface {
     }
 
     /// The biome whose ground a column shows: its local biome, except that rivers and their banks
-    /// in swamps and marshes keep the wetland's mud, peat and moss.
+    /// in swamps and marshes keep the wetland's mud, peat and moss, and the water, shores and
+    /// beaches of volcanic and cold land keep that land's own ground.
     fn ground_biome(&self, x: i32, z: i32, col: &ColumnInfo) -> Biome {
         let biome = local_biome(self.seed, x, z, col);
-        let land = if col.biome == Biome::River {
-            col.biome2
-        } else {
-            col.biome
-        };
-        if biome == Biome::River && wetland(land) {
-            land
-        } else {
-            biome
+        let land = land_of(col);
+        match biome {
+            Biome::River if wetland(land) || own_shores(land) => land,
+            Biome::Lake | Biome::Beach if own_shores(land) => land,
+            _ => biome,
         }
     }
 
@@ -335,7 +358,11 @@ impl Surface {
             Zone::Open | Zone::Wet | Zone::Stony | Zone::Scree | Zone::Shore if spray => Zone::Wet,
             z => z,
         };
-        let strata = self.geology.strata(x, z);
+        let strata = if biome == Biome::Volcanic {
+            self.geology.strata_of(x, z, geology::VOLCANIC)
+        } else {
+            self.geology.strata(x, z)
+        };
         let r = self.recipe(biome);
         let mat = match zone {
             Zone::Open => self.choose(&r.open, 1, x, z, strata.suite),
@@ -348,7 +375,9 @@ impl Surface {
                 // River banks are damp and mossy wherever they run; lakes and the sea keep their
                 // biome's beaches.
                 let shore = match near {
-                    Some(n) if n.river && !wetland(biome) => &self.recipe(Biome::River).shore,
+                    Some(n) if n.river && !wetland(biome) && !own_shores(biome) => {
+                        &self.recipe(Biome::River).shore
+                    }
                     _ => &r.shore,
                 };
                 self.choose(shore, 6, x, z, strata.suite)
@@ -356,7 +385,9 @@ impl Surface {
             Zone::Bed(_) if spray => self.choose(&self.fall_bed, 24, x, z, strata.suite),
             Zone::Bed(d) => {
                 let beds = match col.water {
-                    WaterKind::River if biome != Biome::River && !wetland(biome) => {
+                    WaterKind::River
+                        if biome != Biome::River && !wetland(biome) && !own_shores(biome) =>
+                    {
                         &self.river_beds
                     }
                     WaterKind::Swamp if !wetland(biome) => &self.swamp_beds,
@@ -528,8 +559,45 @@ impl Surface {
             sink.fill_column(x, z, surface, w + 1, self.water);
             if let Some(f) = col.fall {
                 sink.fill_column(x, z, w + 1, f + 1, self.falling);
+            } else if surface <= w && self.frozen(x, z, col, grid) {
+                sink.set(x, w, z, self.ice);
             }
         }
+    }
+
+    /// Whether a column's water is frozen at the surface: still water in cold land freezes all
+    /// over; rivers and the sea freeze from the banks out, a ragged strip wider on the sea, and
+    /// stay open in the middle and around waterfalls.
+    fn frozen(&self, x: i32, z: i32, col: &ColumnInfo, grid: &ColumnGrid) -> bool {
+        if !freezes(land_of(col)) || nearest_fall(x, z, grid, 3).is_some() {
+            return false;
+        }
+        let reach = match col.water {
+            WaterKind::River => 2.0,
+            WaterKind::Sea => 3.0,
+            _ => return true,
+        } + dither(self.seed, 26, x, z, 2.0);
+        // Within NEAR, so pieces agree.
+        let reach = reach.min(NEAR as f32);
+        if col.depth() < 0.8 {
+            return true;
+        }
+        let r = reach.ceil() as i32;
+        for dx in -r..=r {
+            for dz in -r..=r {
+                if (dx * dx + dz * dz) as f32 <= reach * reach
+                    && grid.try_get(x + dx, z + dz).is_some_and(|c| !c.is_wet())
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// The block frozen water is capped with.
+    pub(crate) fn ice(&self) -> BlockId {
+        self.ice
     }
 
     /// The Minecraft biome written for a column. Water gets ocean biomes, whose water colours
@@ -539,7 +607,7 @@ impl Surface {
         if col.is_wet() {
             return water_biome(col).0;
         }
-        land_biome(col.biome).0
+        land_biome(shown_biome(col)).0
     }
 
     /// The Minecraft biome for the 4×4×4 biome cell of a column whose lowest block is at `y`.
@@ -550,7 +618,7 @@ impl Surface {
     pub fn minecraft_biome_at(&self, col: &ColumnInfo, y: i32) -> &'static str {
         match col.water_level {
             Some(w) if y <= col.fall.unwrap_or(w).max(w) => water_biome(col).0,
-            _ => land_biome(col.biome).0,
+            _ => land_biome(shown_biome(col)).0,
         }
     }
 
@@ -574,14 +642,31 @@ impl Surface {
                 let water = tex[i] * tint[i] as f32 / 255.0 * 1.6;
                 c[i] = c[i] * (1.0 - t) * (1.0 - 0.04 * col.depth()).max(0.6) + water * t;
             }
+            // Lakes and ponds of cold land are frozen (rivers and the sea only at the banks).
+            if freezes(land_of(col)) && !matches!(col.water, WaterKind::River | WaterKind::Sea) {
+                let ice = [0xAF, 0xC4, 0xCE];
+                for i in 0..3 {
+                    c[i] = 0.25 * c[i] + 0.75 * ice[i] as f32;
+                }
+            }
         }
         c.map(|v| v.clamp(0.0, 255.0) as u8)
     }
 }
 
+/// The biome whose Minecraft biome a dry column gets: beaches of volcanic and cold land are
+/// part of that land.
+fn shown_biome(col: &ColumnInfo) -> Biome {
+    if col.biome == Biome::Beach && own_shores(col.biome2) {
+        col.biome2
+    } else {
+        col.biome
+    }
+}
+
 /// The Minecraft biome for land of a biome, and its grass colour.
 fn land_biome(b: Biome) -> (&'static str, [u8; 3]) {
-    match b.fallback() {
+    match b {
         Biome::Plains | Biome::Lake => ("minecraft:plains", [0x91, 0xBD, 0x59]),
         Biome::Meadow | Biome::AlpineMeadow => ("minecraft:meadow", [0x83, 0xBB, 0x6D]),
         Biome::Forest => ("minecraft:forest", [0x79, 0xC0, 0x5A]),
@@ -594,9 +679,11 @@ fn land_biome(b: Biome) -> (&'static str, [u8; 3]) {
         Biome::SnowyPeaks => ("minecraft:snowy_slopes", [0x80, 0xB4, 0x97]),
         Biome::Beach => ("minecraft:beach", [0x91, 0xBD, 0x59]),
         Biome::River => ("minecraft:river", [0x8E, 0xB9, 0x71]),
-        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
+        Biome::Tropical => ("minecraft:jungle", [0x59, 0xC9, 0x3C]),
+        Biome::SnowyTaiga => ("minecraft:snowy_taiga", [0x80, 0xB4, 0x97]),
+        Biome::Tundra => ("minecraft:snowy_plains", [0x80, 0xB4, 0x97]),
+        // No snow falls on it (snowy biomes would bury the ash) and its scant grass is dry.
+        Biome::Volcanic => ("minecraft:stony_peaks", [0x9A, 0xBE, 0x4B]),
     }
 }
 
