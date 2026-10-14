@@ -22,6 +22,8 @@
     river: [['width', 'Width', 2, 200, true], ['depth', 'Depth', 1, 30]],
     ridge: [['width', 'Width', 8, 1024, true], ['height', 'Height', 10, app.limits.ridge]],
     biome_zone: [['radius', 'Radius', 8, 2048, true]],
+    road: [['width', 'Width', 2, 40]],
+    waterfall: [['radius', 'Radius', 1, 20], ['drop', 'Drop', 3, app.limits.waterfall], ['angle', 'Direction (°)', 0, 359]],
   });
 
   function set(key: string, value: number, min: number, max: number) {
@@ -82,6 +84,12 @@
       <div class="faint note">
         {edit.points.length} points. Drag a point to move it; Alt+click a point to remove it.
         {edit.kind === 'river' ? 'The river flows from the first point to the last.' : ''}
+        {edit.kind === 'road' ? 'The road follows the lie of the land, cut into rises and laid over dips.' : ''}
+      </div>
+    {:else if edit.kind === 'waterfall'}
+      <div class="faint note">
+        Radius is half the width of the falling water. Drag the round handle on the map to turn it; the land
+        around is shaped to hold the stream above and the pool below.
       </div>
     {/if}
   </div>

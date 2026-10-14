@@ -102,6 +102,11 @@ pub struct ColumnInfo {
     /// foot of a drop; the water above the lip is at `fall` in the column upstream.
     #[serde(default)]
     pub fall: Option<i32>,
+    /// Road: how far inside a road's edge the column is, in blocks. Negative on the verge
+    /// beside the road, where the ground was levelled but no road was laid; `None` away from
+    /// roads. Surface lays the road's earth, decor keeps plants, trees and rocks off it.
+    #[serde(default)]
+    pub road: Option<f32>,
 }
 
 impl ColumnInfo {
@@ -118,6 +123,7 @@ impl ColumnInfo {
             rock: 0.0,
             flow: 0.0,
             fall: None,
+            road: None,
         }
     }
 

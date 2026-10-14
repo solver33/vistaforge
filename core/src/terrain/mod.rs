@@ -18,6 +18,7 @@
 
 pub mod presets;
 
+mod brushes;
 mod edits;
 mod erosion;
 mod grid;
@@ -115,6 +116,8 @@ pub struct Terrain {
     fine: Option<Fine>,
     rivers: Rivers,
     zones: Vec<Zone>,
+    /// Roads and waterfalls drawn by hand, laid over the finished land.
+    brushes: brushes::Brushes,
     /// Multiplier for ground detail (roughness slider).
     detail_amp: f64,
     /// How far biome borders wander, in blocks.
@@ -135,6 +138,8 @@ struct Sample {
     swampy: f32,
     /// Top of a waterfall standing on this column's water.
     fall: Option<i32>,
+    /// Blocks inside a road's edge (see [`ColumnInfo::road`]).
+    road: Option<f32>,
 }
 
 /// How high dry ground must be beside standing water with `surface`, where the water's
@@ -539,6 +544,7 @@ impl Terrain {
             fine: None,
             rivers: Rivers::build(Vec::new(), 0, size, &|_, _| 0.0, &|_, _| 0.0),
             zones: edits::zones(&settings.edits, seed),
+            brushes: brushes::Brushes::default(),
             detail_amp,
             blend_warp: 6.0 + 10.0 * clamp(sl.biome_blend),
             mix,
@@ -588,6 +594,7 @@ impl Terrain {
         };
         let rivers = Rivers::build(traces, seed ^ 0x7177, size, &ground, &lift);
         terrain.rivers = rivers;
+        terrain.brushes = brushes::Brushes::build(&terrain, &settings.edits, seed);
         Ok(terrain)
     }
 
@@ -879,6 +886,13 @@ impl Terrain {
     }
 
     fn sample(&self, x: i32, z: i32) -> Sample {
+        let mut s = self.base_sample(x, z);
+        self.brushes.apply(self, x, z, &mut s);
+        s
+    }
+
+    /// A column before roads and waterfalls.
+    fn base_sample(&self, x: i32, z: i32) -> Sample {
         let (fx, fz) = (x as f64, z as f64);
         let swampy = self.swamp.bilinear(fx, fz);
         let mut hs = self.natural(fx, fz, swampy);
@@ -1025,6 +1039,7 @@ impl Terrain {
                 (WaterKind::River, Some(top), Some(s)) if top > s => Some(top - 1),
                 _ => None,
             },
+            road: None,
         }
     }
 
@@ -1230,6 +1245,7 @@ impl Terrain {
             rock,
             flow: flow.clamp(0.0, 1.0),
             fall: s.fall,
+            road: s.road,
         }
     }
 

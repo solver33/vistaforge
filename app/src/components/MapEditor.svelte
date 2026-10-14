@@ -3,15 +3,25 @@
   import { app, type Tool } from '../lib/app.svelte';
   import {
     KINDS,
+    angleTo,
     defaultRadius,
+    flow,
     hitTest,
     isLine,
+    isLineKind,
+    isWaterfall,
     kindInfo,
     moved,
     newCircle,
     newLine,
+    newWaterfall,
     rounded,
+    simplify,
+    waterfallHandle,
+    waterfallShape,
+    type CircleKind,
     type Hit,
+    type LineKind,
   } from '../lib/edits';
   import { biomeColor } from '../lib/palette';
   import { shadeMap } from '../lib/shade';
@@ -38,11 +48,16 @@
     | { type: 'pan'; sx: number; sy: number; cx: number; cz: number }
     | { type: 'move'; index: number; x: number; z: number; original: ShapeEdit }
     | { type: 'radius'; index: number }
+    | { type: 'angle'; index: number }
     | { type: 'vertex'; index: number; vertex: number }
-    | { type: 'create'; kind: EditKind; x: number; z: number; r: number };
+    | { type: 'create'; kind: EditKind; x: number; z: number; r: number }
+    /** A new waterfall: the lip, and the way the pointer was dragged from it, once it has moved. */
+    | { type: 'aim'; x: number; z: number; angle: number | null };
   let drag: Drag | null = null;
-  /** River or ridge points placed so far. */
-  let draft: { kind: 'river' | 'ridge'; points: Point[] } | null = null;
+  /** River, ridge or road points placed so far. */
+  let draft: { kind: LineKind; points: Point[] } | null = null;
+  /** A road being drawn by dragging; `moved` once the pointer has added points. */
+  let stroke: { moved: boolean } | null = null;
   let hover: Hit | null = null;
   let mouse: Point | null = null;
   let spaceDown = false;
@@ -113,13 +128,14 @@
       c.lineJoin = 'round';
       c.lineCap = 'round';
       path();
-      c.strokeStyle = rgba(k.color, e.kind === 'river' ? 0.55 : 0.3);
-      c.lineWidth = Math.max(e.kind === 'river' ? 3 : 6, e.width * scale);
+      c.strokeStyle = rgba(k.color, e.kind === 'river' ? 0.55 : e.kind === 'road' ? 0.7 : 0.3);
+      c.lineWidth = Math.max(e.kind === 'ridge' ? 6 : 3, e.width * scale);
       c.stroke();
       path();
-      c.strokeStyle = selected || hovered ? '#ffffff' : rgba(k.color, 1);
-      c.lineWidth = selected ? 2.5 : 1.5;
+      c.strokeStyle = selected || hovered ? '#ffffff' : e.kind === 'road' ? 'rgba(236, 214, 170, 0.85)' : rgba(k.color, 1);
+      c.lineWidth = selected ? 2.5 : e.kind === 'road' ? 1 : 1.5;
       if (e.kind === 'ridge') c.setLineDash([6, 4]);
+      if (e.kind === 'road') c.setLineDash([3, 4]);
       c.stroke();
       c.setLineDash([]);
       // Flow direction at the river's mouth.
@@ -136,6 +152,68 @@
       }
       if (selected) {
         for (const [x, y] of pts) handle(c, x, y, 'square');
+      }
+    } else if (isWaterfall(e)) {
+      // The stream from its spring to the lip, the pool below, and an arrow the way it flows.
+      const { spring, pool, poolRadius } = waterfallShape(e);
+      const [x, y] = toScreen(e.x, e.z);
+      const [sx, sy] = toScreen(spring[0], spring[1]);
+      const [px, py] = toScreen(pool[0], pool[1]);
+      const [ux, uz] = flow(e);
+      const line = selected || hovered ? '#ffffff' : k.color;
+      c.lineCap = 'round';
+      c.beginPath();
+      c.moveTo(sx, sy);
+      c.lineTo(x, y);
+      c.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+      c.lineWidth = Math.max(3, 2 * e.radius * scale) + 2;
+      c.stroke();
+      c.strokeStyle = rgba(k.color, 0.85);
+      c.lineWidth = Math.max(3, 2 * e.radius * scale);
+      c.stroke();
+      const pr = Math.max(4, poolRadius * scale);
+      c.beginPath();
+      c.arc(px, py, pr, 0, Math.PI * 2);
+      c.fillStyle = rgba(k.color, selected ? 0.5 : 0.35);
+      c.fill();
+      c.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+      c.lineWidth = (selected ? 2.5 : 1.5) + 2;
+      c.stroke();
+      c.strokeStyle = line;
+      c.lineWidth = selected ? 2.5 : 1.5;
+      c.stroke();
+      const a = Math.atan2(uz, ux);
+      c.fillStyle = line;
+      c.beginPath();
+      c.moveTo(x + 8 * Math.cos(a), y + 8 * Math.sin(a));
+      c.lineTo(x + 8 * Math.cos(a + 2.4), y + 8 * Math.sin(a + 2.4));
+      c.lineTo(x + 8 * Math.cos(a - 2.4), y + 8 * Math.sin(a - 2.4));
+      c.fill();
+      if (selected || pr > 12) {
+        const label = `Fall ${e.drop}`;
+        c.font = '600 12px "Segoe UI", system-ui, sans-serif';
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        const ly = py + pr + 12;
+        c.lineWidth = 3;
+        c.strokeStyle = 'rgba(0,0,0,0.55)';
+        c.strokeText(label, px, ly);
+        c.fillStyle = '#ffffff';
+        c.fillText(label, px, ly);
+      }
+      if (selected) {
+        const [hx, hz] = waterfallHandle(e, 8 / scale);
+        const [hsx, hsy] = toScreen(hx, hz);
+        c.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        c.lineWidth = 1;
+        c.setLineDash([3, 3]);
+        c.beginPath();
+        c.moveTo(x, y);
+        c.lineTo(hsx, hsy);
+        c.stroke();
+        c.setLineDash([]);
+        handle(c, x, y, 'square');
+        handle(c, hsx, hsy, 'round');
       }
     } else {
       const [x, y] = toScreen(e.x, e.z);
@@ -244,9 +322,10 @@
     // What is being drawn right now.
     if (drag?.type === 'create') {
       const r = Math.max(drag.r, 1);
-      const preview = newCircle(drag.kind as Exclude<EditKind, 'river' | 'ridge'>, drag.x, drag.z, r, placeContext(drag.x, drag.z));
+      const preview = newCircle(drag.kind as CircleKind, drag.x, drag.z, r, placeContext(drag.x, drag.z));
       drawEdit(c, preview, true, false);
     }
+    if (drag?.type === 'aim') drawEdit(c, aimed(drag.x, drag.z, drag.angle), true, false);
     if (draft) {
       const pts = mouse ? [...draft.points, mouse] : draft.points;
       if (pts.length >= 2) drawEdit(c, newLine(draft.kind, pts, size), true, false);
@@ -274,6 +353,52 @@
   }
 
   // ---- Interaction ----------------------------------------------------------------------
+
+  /** The ground (or water surface) under (x, z) in the preview, or null without one. */
+  function groundAt(x: number, z: number): number | null {
+    const p = app.preview;
+    if (!p || p.size !== app.settings.size) return null;
+    const i = Math.min(p.res - 1, Math.max(0, Math.floor(x / p.step)));
+    const j = Math.min(p.res - 1, Math.max(0, Math.floor(z / p.step)));
+    const k = j * p.res + i;
+    const w = p.water[k];
+    return Number.isNaN(w) ? p.heights[k] : Math.max(p.heights[k], w);
+  }
+
+  /** The way the ground falls away from (x, z), in degrees; south where it is flat. */
+  function downhill(x: number, z: number): number {
+    const here = groundAt(x, z);
+    if (here === null) return 90;
+    let best = 90;
+    let low = Infinity;
+    for (let a = 0; a < 360; a += 15) {
+      const r = (a * Math.PI) / 180;
+      let sum = 0;
+      let n = 0;
+      for (const d of [12, 24, 36]) {
+        const g = groundAt(x + Math.cos(r) * d, z + Math.sin(r) * d);
+        if (g !== null) {
+          sum += g;
+          n++;
+        }
+      }
+      if (n > 0 && sum / n < low) {
+        low = sum / n;
+        best = a;
+      }
+    }
+    return here - low > 1 ? best : 90;
+  }
+
+  /** A new waterfall at (x, z): flowing downhill unless aimed, falling as far as the slope does there. */
+  function aimed(x: number, z: number, angle: number | null) {
+    const a = angle ?? downhill(x, z);
+    const [ux, uz] = [Math.cos((a * Math.PI) / 180), Math.sin((a * Math.PI) / 180)];
+    const up = groundAt(x - ux * 24, z - uz * 24);
+    const down = groundAt(x + ux * 24, z + uz * 24);
+    const fall = up !== null && down !== null ? up - down : 0;
+    return newWaterfall(x, z, a, Math.min(app.limits.waterfall, fall > 8 ? Math.min(60, fall) : 12));
+  }
 
   function placeContext(x: number, z: number) {
     const p = app.preview;
@@ -311,6 +436,7 @@
     else if (spaceDown) cursorStyle = 'grab';
     else if (app.tool !== 'select') cursorStyle = 'crosshair';
     else if (hover?.part.kind === 'radius') cursorStyle = 'ew-resize';
+    else if (hover?.part.kind === 'angle') cursorStyle = 'grab';
     else if (hover) cursorStyle = 'move';
     else cursorStyle = 'default';
   }
@@ -337,16 +463,22 @@
           else drag = { type: 'vertex', index: hit.index, vertex: hit.part.index };
         } else if (hit.part.kind === 'radius') {
           drag = { type: 'radius', index: hit.index };
+        } else if (hit.part.kind === 'angle') {
+          drag = { type: 'angle', index: hit.index };
         } else {
           drag = { type: 'move', index: hit.index, x, z, original: $state.snapshot(edit) as ShapeEdit };
         }
       }
-    } else if (app.tool === 'river' || app.tool === 'ridge') {
+    } else if (isLineKind(app.tool)) {
       if (!draft || draft.kind !== app.tool) draft = { kind: app.tool, points: [] };
       const last = draft.points[draft.points.length - 1];
       // The second click of a double-click lands on the same spot; don't add it twice.
       if (!last || Math.hypot(last[0] - x, last[1] - z) * scale > 4) draft.points.push([x, z]);
       drafting = true;
+      // A road can also be drawn in one stroke.
+      if (app.tool === 'road') stroke = { moved: false };
+    } else if (app.tool === 'waterfall') {
+      drag = { type: 'aim', x, z, angle: null };
     } else {
       drag = { type: 'create', kind: app.tool, x, z, r: 0 };
     }
@@ -379,10 +511,25 @@
         if (isLine(edit)) edit.points[drag.vertex] = [x, z];
         break;
       }
+      case 'angle': {
+        const edit = edits[drag.index];
+        if (isWaterfall(edit)) edit.angle = angleTo(edit.x, edit.z, x, z);
+        break;
+      }
       case 'create':
         drag.r = Math.hypot(x - drag.x, z - drag.z);
         break;
+      case 'aim':
+        if (Math.hypot(x - drag.x, z - drag.z) * scale >= 6) drag.angle = angleTo(drag.x, drag.z, x, z);
+        break;
       default:
+        if (stroke && draft && e.buttons & 1) {
+          const last = draft.points[draft.points.length - 1];
+          if (!last || Math.hypot(last[0] - x, last[1] - z) * scale >= 6) {
+            draft.points.push([x, z]);
+            stroke.moved = true;
+          }
+        }
         hover = app.tool === 'select' ? hitTest(edits, x, z, 8 / scale, app.selected) : null;
     }
     setCursorStyle();
@@ -391,14 +538,21 @@
 
   function onPointerUp(e: PointerEvent) {
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    // A road drawn in one stroke is done when the button comes up.
+    const s = stroke;
+    stroke = null;
+    if (s?.moved) finishDraft();
     const d = drag;
     drag = null;
     if (!d) return;
     if (d.type === 'create') {
-      const kind = d.kind as Exclude<EditKind, 'river' | 'ridge'>;
+      const kind = d.kind as CircleKind;
       // A plain click places a landform of a sensible size.
       const r = d.r * scale < 6 ? defaultRadius(kind, app.settings.size) : d.r;
       app.addEdit(newCircle(kind, d.x, d.z, r, placeContext(d.x, d.z)));
+      if (!e.shiftKey) app.tool = 'select';
+    } else if (d.type === 'aim') {
+      app.addEdit(aimed(d.x, d.z, d.angle));
       if (!e.shiftKey) app.tool = 'select';
     } else if (d.type !== 'pan') {
       const edits = app.settings.edits;
@@ -411,7 +565,9 @@
 
   function finishDraft() {
     if (draft && draft.points.length >= 2) {
-      app.addEdit(newLine(draft.kind, draft.points, app.settings.size));
+      // Strokes drawn by hand have a point every few pixels; keep the ones that shape the line.
+      const points = draft.kind === 'road' ? simplify(draft.points, Math.max(0.5, 0.75 / scale)) : draft.points;
+      app.addEdit(newLine(draft.kind, points, app.settings.size));
       app.tool = 'select';
     }
     draft = null;

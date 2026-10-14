@@ -189,6 +189,10 @@ impl Forest {
             return None;
         }
         let col = column(c.x, c.z)?;
+        // Nothing stands on a road or right beside it.
+        if col.road.is_some_and(|r| r > -2.0) {
+            return None;
+        }
         let (biome, zone) = surface.biome_zone(c.x, c.z, &col);
         let st = stand(biome);
         let wood = woodland(self.seed, c.x, c.z, biome);

@@ -12,6 +12,8 @@ export interface HeightLimits {
   mountain: number;
   plateau: number;
   ridge: number;
+  /** Highest drop of a waterfall. */
+  waterfall: number;
 }
 
 export const WORLD_HEIGHTS: { id: WorldHeight; label: string; top: number; help: string }[] = [
@@ -24,8 +26,8 @@ export const WORLD_HEIGHTS: { id: WorldHeight; label: string; top: number; help:
   },
 ];
 
-const STANDARD: HeightLimits = { top: 319, seaLevel: 160, hill: 200, mountain: 320, plateau: 300, ridge: 320 };
-const TALL: HeightLimits = { top: 2031, seaLevel: 300, hill: 1000, mountain: 1900, plateau: 2000, ridge: 1500 };
+const STANDARD: HeightLimits = { top: 319, seaLevel: 160, hill: 200, mountain: 320, plateau: 300, ridge: 320, waterfall: 200 };
+const TALL: HeightLimits = { top: 2031, seaLevel: 300, hill: 1000, mountain: 1900, plateau: 2000, ridge: 1500, waterfall: 1500 };
 
 export function heightLimits(h: WorldHeight | undefined): HeightLimits {
   return h === 'tall' ? TALL : STANDARD;
@@ -45,6 +47,8 @@ export function clampHeights(s: WorldSettings): void {
         return { ...e, level: Math.min(e.level, l.plateau) };
       case 'ridge':
         return { ...e, height: Math.min(e.height, l.ridge) };
+      case 'waterfall':
+        return { ...e, drop: Math.min(e.drop, l.waterfall) };
       default:
         return e;
     }
