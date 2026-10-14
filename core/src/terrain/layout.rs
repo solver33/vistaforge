@@ -107,7 +107,7 @@ fn category_for(b: Biome) -> (Option<Biome>, (f64, f64), Params) {
         coast,
         e,
     };
-    match b {
+    match b.fallback() {
         Biome::Plains => (
             Some(b),
             (0.30, 0.30),
@@ -166,6 +166,9 @@ fn category_for(b: Biome) -> (Option<Biome>, (f64, f64), Params) {
             (0.95, 0.50),
             p(50.0, 30.0, 10.0, 150.0, 1.6, 1.2, 0.35, 0.0, 14.0, 0.95),
         ),
+        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
+            unreachable!("fallback() returns one of the original biomes")
+        }
     }
 }
 

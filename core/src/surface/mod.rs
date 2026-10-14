@@ -577,7 +577,7 @@ impl Surface {
 
 /// The Minecraft biome for land of a biome, and its grass colour.
 fn land_biome(b: Biome) -> (&'static str, [u8; 3]) {
-    match b {
+    match b.fallback() {
         Biome::Plains | Biome::Lake => ("minecraft:plains", [0x91, 0xBD, 0x59]),
         Biome::Meadow | Biome::AlpineMeadow => ("minecraft:meadow", [0x83, 0xBB, 0x6D]),
         Biome::Forest => ("minecraft:forest", [0x79, 0xC0, 0x5A]),
@@ -590,6 +590,9 @@ fn land_biome(b: Biome) -> (&'static str, [u8; 3]) {
         Biome::SnowyPeaks => ("minecraft:snowy_slopes", [0x80, 0xB4, 0x97]),
         Biome::Beach => ("minecraft:beach", [0x91, 0xBD, 0x59]),
         Biome::River => ("minecraft:river", [0x8E, 0xB9, 0x71]),
+        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
+            unreachable!("fallback() returns one of the original biomes")
+        }
     }
 }
 

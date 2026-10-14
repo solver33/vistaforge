@@ -78,7 +78,7 @@ fn stand(biome: Biome) -> Stand {
         open_size,
         grove_size,
     };
-    match biome {
+    match biome.fallback() {
         Biome::Plains => s(0.014, 0.45, &[(Oak, 8), (Birch, 1), (Bush, 3)], 0.75, 0.5),
         Biome::Meadow => s(0.008, 0.45, &[(Oak, 4), (Birch, 3), (Bush, 3)], 0.65, 0.45),
         Biome::Forest => s(
@@ -148,6 +148,9 @@ fn stand(biome: Biome) -> Stand {
             0.6,
             0.5,
         ),
+        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
+            unreachable!("fallback() returns one of the original biomes")
+        }
     }
 }
 

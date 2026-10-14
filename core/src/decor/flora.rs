@@ -690,7 +690,7 @@ const NOTHING: Community = Community {
 
 pub(crate) fn community(biome: Biome, zone: Zone) -> &'static Community {
     use Biome as B;
-    match (biome, zone) {
+    match (biome.fallback(), zone) {
         (B::SnowyPeaks, _) | (_, Zone::Bed(_)) => &NOTHING,
         (_, Zone::Rock) | (_, Zone::Scree) => &BARE,
         (B::Beach, _) => &DUNES,
@@ -718,6 +718,9 @@ pub(crate) fn community(biome: Biome, zone: Zone) -> &'static Community {
         (B::Mountains, _) => &MOUNTAIN_OPEN,
         (B::AlpineMeadow, Zone::Wood) => &TAIGA_WOOD,
         (B::AlpineMeadow, _) => &ALPINE_OPEN,
+        (B::Tropical | B::SnowyTaiga | B::Tundra | B::Volcanic, _) => {
+            unreachable!("fallback() returns one of the original biomes")
+        }
     }
 }
 

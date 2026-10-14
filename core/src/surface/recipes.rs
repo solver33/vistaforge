@@ -844,7 +844,7 @@ const LAKE: Recipe = Recipe {
 };
 
 pub(crate) fn recipe(biome: Biome) -> &'static Recipe {
-    match biome {
+    match biome.fallback() {
         Biome::Plains => &PLAINS,
         Biome::Meadow => &MEADOW,
         Biome::Forest => &FOREST,
@@ -860,6 +860,9 @@ pub(crate) fn recipe(biome: Biome) -> &'static Recipe {
         Biome::Beach => &BEACH,
         Biome::River => &RIVER,
         Biome::Lake => &LAKE,
+        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
+            unreachable!("fallback() returns one of the original biomes")
+        }
     }
 }
 

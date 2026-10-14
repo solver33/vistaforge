@@ -201,6 +201,10 @@ fn biome_rgb(b: Biome) -> [f32; 3] {
         Biome::Beach => [220.0, 205.0, 150.0],
         Biome::River => [70.0, 130.0, 210.0],
         Biome::Lake => [50.0, 100.0, 190.0],
+        Biome::Tropical => [40.0, 140.0, 60.0],
+        Biome::SnowyTaiga => [170.0, 190.0, 185.0],
+        Biome::Tundra => [200.0, 210.0, 205.0],
+        Biome::Volcanic => [70.0, 65.0, 65.0],
     }
 }
 

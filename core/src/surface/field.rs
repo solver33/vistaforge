@@ -101,7 +101,7 @@ pub(crate) fn woodland(seed: u64, x: i32, z: i32, biome: Biome) -> f32 {
     let (fx, fz) = (x as f64, z as f64);
     let n = fbm2(seed ^ salt::WOOD, fx / 110.0, fz / 110.0, 3) as f32
         + 0.25 * value2(seed ^ salt::WOOD ^ 1, fx / 23.0, fz / 23.0) as f32;
-    let (lo, hi) = match biome {
+    let (lo, hi) = match biome.fallback() {
         // Mostly closed canopy with glades.
         Biome::Forest | Biome::BirchForest | Biome::Taiga => (-0.62, -0.32),
         Biome::PineForest => (-0.5, -0.2),
@@ -113,6 +113,9 @@ pub(crate) fn woodland(seed: u64, x: i32, z: i32, biome: Biome) -> f32 {
         Biome::Mountains => (0.0, 0.35),
         Biome::Marsh | Biome::AlpineMeadow => (0.55, 0.7),
         Biome::SnowyPeaks | Biome::Beach | Biome::River | Biome::Lake => return 0.0,
+        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
+            unreachable!("fallback() returns one of the original biomes")
+        }
     };
     smoothstep(lo, hi, n)
 }
