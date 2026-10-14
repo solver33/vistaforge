@@ -376,7 +376,9 @@ impl Model {
             shapes = branch_shapes(state, 1);
         } else if name.ends_with("_small_branch") {
             shapes = branch_shapes(state, 2);
-        } else if let Some(l) = prop(state, "layers").filter(|_| name.ends_with("_layer")) {
+        } else if let Some(l) = prop(state, "layers")
+            .filter(|_| name.ends_with("_layer") || name == "conquest:snow_slab")
+        {
             shapes.push(Shape::new([0.0; 3], [16.0, 2.0 * l as f32, 16.0]));
         } else if info.is_some_and(|b| !b.opaque) && !name.contains("water") {
             // Plants: two crossed, see-through planes, as tall as their `layers` say.

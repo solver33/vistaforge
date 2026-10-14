@@ -104,7 +104,7 @@ Each workstream has its own branch and owns its own directories. Every workstrea
 - Preview colours.
 
 **Trees**
-- Species built from CR pieces for each wood type: oak, birch, spruce, pine, willow, dead trees, bushes and young trees.
+- Species built from CR pieces for each wood type: oak, birch, spruce, pine, willow, dead trees, bushes and young trees, plus palms, lush jungle trees and snow-laden spruces for the tropical and snowy biomes.
 - Thick trunks from pillars and vertical quarters, branch tips, roots and stumps.
 - A size range for every species.
 - Side renders of each species as evidence. Stay within `MAX_REACH`.

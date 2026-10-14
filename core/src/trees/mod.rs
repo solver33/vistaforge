@@ -47,6 +47,12 @@ pub enum Species {
     Dead,
     /// A low shrub.
     Bush,
+    /// A coconut palm: a slender, curving trunk under a star of drooping fronds.
+    Palm,
+    /// A lush tropical broadleaf: a tall, buttressed trunk under a wide, flat crown.
+    Jungle,
+    /// A spruce with snow lying on its needles.
+    SnowySpruce,
 }
 
 impl Species {
@@ -58,6 +64,9 @@ impl Species {
         Species::Willow,
         Species::Dead,
         Species::Bush,
+        Species::Palm,
+        Species::Jungle,
+        Species::SnowySpruce,
     ];
 
     /// English name for the app.
@@ -70,6 +79,9 @@ impl Species {
             Species::Willow => "Willow",
             Species::Dead => "Dead tree",
             Species::Bush => "Bush",
+            Species::Palm => "Palm",
+            Species::Jungle => "Jungle tree",
+            Species::SnowySpruce => "Snowy spruce",
         }
     }
 }
@@ -114,12 +126,13 @@ impl Trees {
             let (x, y, z) = (lx + origin.0, ly + origin.1, lz + origin.2);
             let target = sink.get(x, y, z);
             let wet = target == water;
-            // Where crowns overlap, the later tree wins: leaves replace leaves, wood replaces
-            // leaves, and nothing replaces another tree's wood.
+            // Where crowns overlap, the later tree wins: its leaves, snow and wood replace
+            // leaves and the snow on them, and nothing replaces another tree's wood.
+            let soft = self.kits.is_leaves(target) || self.kits.is_snow(target);
             let free = target == AIR
-                || self.kits.is_leaves(target)
+                || soft
                 || match cell.piece {
-                    Piece::Leaves(_) => false,
+                    Piece::Leaves(_) | Piece::Snow(_) => false,
                     _ => wet || replace.contains(&(x, y, z)),
                 };
             if !free {
@@ -127,6 +140,7 @@ impl Trees {
             }
             let id = match cell.piece {
                 Piece::Leaves(l) => self.kits.leaves[l as usize],
+                Piece::Snow(l) => self.kits.snow[l as usize - 1],
                 piece => {
                     let mossy = (cell.flags & MOSSY != 0) as u8;
                     let kit = &self.kits.woods[(cell.wood + mossy) as usize];
@@ -501,7 +515,10 @@ mod tests {
                     let got = both.get(x, y, z);
                     if mine == AIR {
                         assert_eq!(got, theirs, "{species:?} changed ({x}, {y}, {z})");
-                    } else if trees.kits.is_tree(theirs) && !trees.kits.is_leaves(theirs) {
+                    } else if trees.kits.is_tree(theirs)
+                        && !trees.kits.is_leaves(theirs)
+                        && !trees.kits.is_snow(theirs)
+                    {
                         assert_eq!(got, theirs, "{species:?} replaced wood at ({x}, {y}, {z})");
                     } else {
                         assert_eq!(got, mine, "{species:?} differs at ({x}, {y}, {z})");
@@ -627,7 +644,7 @@ mod tests {
             .flat_map(|(x, z)| (50..160).map(move |y| (x, y, z)))
             .filter(|&(x, y, z)| {
                 let id = area.get(x, y, z);
-                trees.kits.is_tree(id) && !trees.kits.is_leaves(id)
+                trees.kits.is_tree(id) && !trees.kits.is_leaves(id) && !trees.kits.is_snow(id)
             })
             .collect();
         let mut near = std::collections::HashSet::new();
@@ -641,7 +658,7 @@ mod tests {
                 continue;
             }
             let id = area.get(c.0, c.1, c.2);
-            if id == AIR || trees.kits.is_leaves(id) {
+            if id == AIR || trees.kits.is_leaves(id) || trees.kits.is_snow(id) {
                 continue;
             }
             let ground = !trees.kits.is_tree(id);
