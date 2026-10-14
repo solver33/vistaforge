@@ -107,7 +107,7 @@ fn category_for(b: Biome) -> (Option<Biome>, (f64, f64), Params) {
         coast,
         e,
     };
-    match b.fallback() {
+    match b {
         Biome::Plains => (
             Some(b),
             (0.30, 0.30),
@@ -166,9 +166,29 @@ fn category_for(b: Biome) -> (Option<Biome>, (f64, f64), Params) {
             (0.95, 0.50),
             p(50.0, 30.0, 10.0, 150.0, 1.6, 1.2, 0.35, 0.0, 14.0, 0.95),
         ),
-        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
+        // Warm, wet lowland with steep little hills.
+        Biome::Tropical => (
+            Some(b),
+            (0.36, 0.90),
+            p(8.0, 14.0, 7.0, 4.0, 1.0, 0.8, 0.0, 0.0, 70.0, 0.36),
+        ),
+        Biome::SnowyTaiga => (
+            Some(b),
+            (0.72, 0.62),
+            p(15.0, 17.0, 7.0, 10.0, 1.05, 0.9, 0.05, 0.0, 40.0, 0.72),
+        ),
+        // Wide, gently rolling open ground.
+        Biome::Tundra => (
+            Some(b),
+            (0.55, 0.22),
+            p(6.0, 7.0, 3.0, 0.0, 0.6, 0.5, 0.0, 0.0, 80.0, 0.55),
+        ),
+        // Rugged dark upland: lava ridges and rough ground.
+        Biome::Volcanic => (
+            Some(b),
+            (0.86, 0.20),
+            p(26.0, 22.0, 11.0, 26.0, 1.45, 1.0, 0.3, 0.0, 22.0, 0.86),
+        ),
     }
 }
 
@@ -475,7 +495,7 @@ impl Bands {
         if biome == Biome::AlpineMeadow && slope > 1.15 && has(Biome::Mountains) {
             biome = Biome::Mountains;
         } else if biome == Biome::Mountains
-            && slope < 0.3
+            && slope < 0.45
             && has(Biome::AlpineMeadow)
             && band + 1 < self.members.len()
         {
