@@ -7,6 +7,7 @@
 pub mod config;
 pub mod encode;
 pub mod paths;
+pub mod render;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -82,6 +83,8 @@ pub struct Bridge {
     catalog: Mutex<Option<Arc<Catalog>>>,
     cancel: AtomicBool,
     exporting: AtomicBool,
+    /// The game's models and textures for render mode, read once.
+    render: Mutex<Option<render::Cache>>,
 }
 
 impl Default for Bridge {
@@ -105,6 +108,7 @@ impl Bridge {
             catalog: Mutex::new(None),
             cancel: AtomicBool::new(false),
             exporting: AtomicBool::new(false),
+            render: Mutex::new(None),
         }
     }
 
@@ -144,6 +148,21 @@ impl Bridge {
         let catalog = self.catalog()?;
         let generator = Generator::new(settings, &catalog, Quality::Preview)?;
         Ok(encode::preview(&generator.preview(res)))
+    }
+
+    /// A piece of the map with every block, for render mode, packed by [`render::build`].
+    /// `progress` gets (parts done, parts in all).
+    pub fn render_scene(
+        &self,
+        settings: &WorldSettings,
+        request: &render::SceneRequest,
+        progress: &(dyn Fn(usize, usize) + Sync),
+    ) -> Result<Vec<u8>> {
+        let catalog = self.catalog()?;
+        let generator = Generator::new(settings, &catalog, Quality::Full)?;
+        let mut cache = self.render.lock().unwrap();
+        let library = render::library(&mut cache, request, &catalog)?;
+        render::build(&generator, &catalog, library, request, progress)
     }
 
     /// Writes the world to `<saves_dir>/<settings.name>`. `progress` is called at most about
