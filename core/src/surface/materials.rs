@@ -130,6 +130,11 @@ pub(crate) const ROCKS: &[&str] = &[
     "orange_sandstone",
     "mossy_faded_tan_sandstone",
     "weathered_andesite",
+    "porous_andesite",
+    "weathered_basalt",
+    "porous_basalt",
+    "tuff",
+    "dark_tuff",
 ];
 
 #[rustfmt::skip]
@@ -186,6 +191,10 @@ const SPECS: &[Spec<'static>] = &[
     spec!("coarse_sandy_soil", "conquest:coarse_sandy_soil", Layer("conquest:coarse_sandy_soil_layer"), Soil),
     spec!("lichen_dirt", "conquest:lichen_loamy_dirt", Slab("conquest:lichen_loamy_dirt_slab"), Soil),
     spec!("frozen_dirt", "conquest:frozen_loamy_dirt", Slab("conquest:frozen_loamy_dirt_slab"), Soil),
+    spec!("red_earth", "conquest:red_earth", Slab("conquest:red_earth_slab"), Soil),
+    spec!("ochre_soil", "conquest:ochre_soil", Slab("conquest:ochre_soil_slab"), Soil),
+    spec!("coarse_red_dirt", "conquest:coarse_red_dirt", Slab("conquest:coarse_red_dirt_slab"), Soil),
+    spec!("burnt_soil", "conquest:burnt_soil", Slab("conquest:burnt_soil_slab"), Soil),
 
     // Mud, peat, silt and clay.
     spec!("mud", "conquest:mud", Slab("conquest:mud_slab"), Mud),
@@ -195,6 +204,7 @@ const SPECS: &[Spec<'static>] = &[
     spec!("dark_silt", "conquest:dark_silt", Slab("conquest:dark_silt_slab"), Mud),
     spec!("mossy_silt", "conquest:mossy_light_silt", Slab("conquest:mossy_light_silt_slab"), Mud, tinted),
     spec!("clay", "conquest:dark_gray_clay", Slab("conquest:dark_gray_clay_slab"), Mud),
+    spec!("red_clay", "conquest:red_clay", Slab("conquest:red_clay_slab"), Mud),
 
     // Sands.
     spec!("wet_sand", "conquest:wet_sand", Layer("conquest:wet_sand_layer"), Sand),
@@ -229,6 +239,9 @@ const SPECS: &[Spec<'static>] = &[
     spec!("limestone_debris", "conquest:pale_limestone_debris", Layer("conquest:pale_limestone_debris_layer"), Gravel),
     spec!("mossy_limestone_debris", "conquest:mossy_pale_limestone_debris", Layer("conquest:mossy_pale_limestone_debris_layer"), Gravel, tinted),
     spec!("dark_limestone_debris", "conquest:dark_limestone_debris", Layer("conquest:dark_limestone_debris_layer"), Gravel),
+
+    // Volcanic ash: fine and loose, so it lies deep like sand.
+    spec!("ash", "conquest:ash", Layer("conquest:ash_layer"), Sand),
 
     // Ice.
     spec!("glacier_ice", "conquest:glacier_ice", Slab("conquest:glacier_ice_slab"), Ice),

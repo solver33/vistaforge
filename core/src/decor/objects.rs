@@ -91,7 +91,7 @@ fn wood_kit(b: &Blocks, log: &str, wood: &str) -> Result<WoodKit> {
 /// Wood of the fallen logs and stumps of a biome.
 fn woods(biome: Biome) -> &'static [(Wood, u32)] {
     use Wood::*;
-    match biome.fallback() {
+    match biome {
         Biome::Forest => &[(Oak, 4), (Birch, 1)],
         Biome::BirchForest => &[(Birch, 4), (Oak, 1)],
         Biome::Taiga => &[(Spruce, 4), (Pine, 1), (Birch, 1)],
@@ -101,9 +101,10 @@ fn woods(biome: Biome) -> &'static [(Wood, u32)] {
         Biome::Mountains | Biome::AlpineMeadow | Biome::SnowyPeaks => &[(Spruce, 2), (Pine, 1)],
         Biome::Beach | Biome::River | Biome::Lake => &[(Willow, 1), (Oak, 1), (Birch, 1)],
         Biome::Plains | Biome::Meadow => &[(Oak, 3), (Birch, 1)],
-        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
+        Biome::Tropical => &[(Oak, 2), (Willow, 1)],
+        Biome::SnowyTaiga => &[(Spruce, 4), (Pine, 1)],
+        Biome::Tundra => &[(Birch, 1)],
+        Biome::Volcanic => &[(Pine, 1)],
     }
 }
 
@@ -111,7 +112,7 @@ fn woods(biome: Biome) -> &'static [(Wood, u32)] {
 fn chances(biome: Biome, zone: Zone) -> (f32, f32, f32) {
     use Biome as B;
     let wooded = zone == Zone::Wood;
-    let (boulder, log, stump) = match biome.fallback() {
+    let (boulder, log, stump) = match biome {
         B::Plains if wooded => (0.03, 0.12, 0.06),
         B::Plains => (0.03, 0.0, 0.004),
         B::Meadow if wooded => (0.03, 0.1, 0.05),
@@ -138,9 +139,13 @@ fn chances(biome: Biome, zone: Zone) -> (f32, f32, f32) {
         B::Beach => (0.03, 0.02, 0.0),
         B::River => (0.1, 0.03, 0.02),
         B::Lake => (0.04, 0.02, 0.01),
-        B::Tropical | B::SnowyTaiga | B::Tundra | B::Volcanic => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
+        B::Tropical if wooded => (0.03, 0.3, 0.12),
+        B::Tropical => (0.02, 0.04, 0.05),
+        B::SnowyTaiga if wooded => (0.05, 0.3, 0.1),
+        B::SnowyTaiga => (0.04, 0.03, 0.04),
+        // Low rocks the ice left, and on volcanic land old lava blocks.
+        B::Tundra => (0.03, 0.0, 0.0),
+        B::Volcanic => (0.03, 0.0, 0.0),
     };
     match zone {
         Zone::Stony => (boulder, log * 0.4, stump * 0.4),
@@ -167,7 +172,7 @@ fn damp(biome: Biome, top: &Top, moisture: f32) -> bool {
         || (top.zone == Zone::Wood
             && matches!(
                 biome,
-                Biome::Forest | Biome::Taiga | Biome::Swamp | Biome::BirchForest
+                Biome::Forest | Biome::Taiga | Biome::Swamp | Biome::BirchForest | Biome::Tropical
             ))
         || matches!(biome, Biome::Swamp | Biome::Marsh)
 }
@@ -290,8 +295,13 @@ impl Objects {
         // In the mountains and on rough ground boulders lie low, sunk half into the slope, so
         // they are part of it rather than lumps set on top.
         let low = matches!(
-            top.biome.fallback(),
-            Biome::Mountains | Biome::Highlands | Biome::SnowyPeaks | Biome::AlpineMeadow
+            top.biome,
+            Biome::Mountains
+                | Biome::Highlands
+                | Biome::SnowyPeaks
+                | Biome::AlpineMeadow
+                | Biome::Tundra
+                | Biome::Volcanic
         ) || matches!(top.zone, Zone::Stony | Zone::Scree | Zone::Rock);
         let radius = if low {
             (1.0 + 1.4 * r(2).powf(1.6)).min(2.4)

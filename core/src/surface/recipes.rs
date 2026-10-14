@@ -843,8 +843,194 @@ const LAKE: Recipe = Recipe {
     ..PLAINS
 };
 
+/// Lush lowland: deep green grass and fern-covered floors over red tropical earth.
+const TROPICAL: Recipe = Recipe {
+    open: mixa(
+        &[("grass", 6), ("clover", 2), ("overgrown_silt", 1)],
+        10.0,
+        &[("mossy_soil", 2), ("grassy_dirt", 1), ("red_earth", 1)],
+        4.0,
+        0.12,
+    ),
+    wood: mixa(
+        &[
+            ("mossy_roots", 4),
+            ("muddy_floor", 3),
+            ("mossy_soil", 2),
+            ("grass", 2),
+        ],
+        7.0,
+        &[
+            ("green_sphagnum", 2),
+            ("shredded_leaves", 2),
+            ("cushion_moss", 1),
+            ("red_earth", 1),
+        ],
+        4.0,
+        0.2,
+    ),
+    wet: mixa(
+        &[("mud", 2), ("mossy_silt", 2), ("green_sphagnum", 2)],
+        5.0,
+        &[("clay_mud", 1), ("muddy_floor", 1)],
+        3.0,
+        0.2,
+    ),
+    stony: mixa(
+        &[
+            ("overgrown_stones", 3),
+            ("red_earth", 2),
+            ("mossy_stones", 2),
+        ],
+        6.0,
+        &[("coarse_red_dirt", 1), ("mossy_roots", 1)],
+        3.0,
+        0.15,
+    ),
+    scree: mix(
+        &[("@debris", 2), ("red_earth", 2), ("coarse_red_dirt", 1)],
+        5.0,
+    ),
+    shore: mixa(
+        &[("wet_sand_veg", 3), ("sand_veg", 2), ("mossy_silt", 1)],
+        5.0,
+        &[("mud", 1), ("pebbles", 1)],
+        3.0,
+        0.15,
+    ),
+    beds: LAKE_BEDS,
+    topsoil: "red_earth",
+    subsoil: "red_clay",
+    soil_depth: 4.0,
+    mossy_rock: true,
+    ..PLAINS
+};
+
+/// Spruce forest under snow: snow everywhere, thinner under the trees where needles show.
+const SNOWY_TAIGA: Recipe = Recipe {
+    open: mixa(
+        &[("snow", 1)],
+        20.0,
+        &[("taiga_grass", 1), ("frozen_dirt", 1)],
+        6.0,
+        0.06,
+    ),
+    wood: mixa(
+        &[("snow", 12), ("taiga_floor", 2), ("fir_floor", 1)],
+        7.0,
+        &[("mossy_fir_floor", 1), ("frozen_dirt", 1)],
+        4.0,
+        0.06,
+    ),
+    wet: mix(&[("snow", 5), ("green_sphagnum", 1), ("peat", 1)], 6.0),
+    stony: mix(&[("snow", 4), ("mossy_stones", 1), ("@debris", 1)], 5.0),
+    scree: mix(&[("@debris", 2), ("snow", 2)], 5.0),
+    shore: mix(&[("snow", 2), ("gray_gravel", 1), ("frozen_dirt", 1)], 5.0),
+    topsoil: "frozen_dirt",
+    snow: true,
+    ..TAIGA
+};
+
+/// Cold open ground: snow lying in drifts, with windswept patches of frozen earth, lichen and
+/// gravel where low plants hold on.
+const TUNDRA: Recipe = Recipe {
+    open: mixa(
+        &[
+            ("snow", 6),
+            ("frozen_dirt", 1),
+            ("lichen_dirt", 1),
+            ("brown_moss", 1),
+        ],
+        14.0,
+        &[("heather_moss", 1), ("light_gravel", 1), ("taiga_grass", 1)],
+        5.0,
+        0.1,
+    ),
+    wood: mix(&[("snow", 3), ("frozen_dirt", 1), ("lichen_dirt", 1)], 10.0),
+    wet: mix(
+        &[
+            ("snow", 4),
+            ("brown_sphagnum", 1),
+            ("peat", 1),
+            ("frozen_dirt", 1),
+        ],
+        7.0,
+    ),
+    stony: mix(
+        &[
+            ("snow", 3),
+            ("lichen_dirt", 1),
+            ("@debris", 1),
+            ("gray_gravel", 1),
+        ],
+        6.0,
+    ),
+    scree: mix(&[("@debris", 2), ("snow", 2)], 5.0),
+    shore: mix(&[("gray_gravel", 2), ("frozen_dirt", 1), ("snow", 1)], 5.0),
+    beds: [
+        mix(&[("gray_gravel", 2), ("dark_silt", 1), ("pebbles", 1)], 6.0),
+        mix(&[("gray_gravel", 2), ("dark_silt", 2)], 7.0),
+        mix(&[("dark_gravel", 2), ("dark_silt", 1)], 8.0),
+    ],
+    topsoil: "frozen_dirt",
+    subsoil: "rocky_soil",
+    soil_depth: 2.0,
+    stony_slope: 0.5,
+    scree_slope: 0.9,
+    rock_slope: (1.0, 1.6),
+    snow: true,
+    mossy_rock: false,
+};
+
+/// Around a volcano: grey ash and burnt soil, dark cinder gravel on the slopes, black sand at
+/// the water, over basalt and tuff (the volcanic suite in `geology`).
+const VOLCANIC: Recipe = Recipe {
+    open: mixa(
+        &[("ash", 4), ("burnt_soil", 2), ("dark_gravel", 1)],
+        11.0,
+        &[("small_stones", 1), ("gray_sand", 1)],
+        4.0,
+        0.1,
+    ),
+    wood: mix(&[("burnt_soil", 2), ("ash", 2)], 8.0),
+    wet: mix(&[("ash", 2), ("dark_silt", 2), ("mud", 1)], 6.0),
+    stony: mix(
+        &[
+            ("dark_gravel", 2),
+            ("ash", 2),
+            ("@debris", 1),
+            ("burnt_soil", 1),
+        ],
+        5.0,
+    ),
+    scree: mix(&[("@debris", 3), ("ash", 1)], 5.0),
+    shore: mixa(
+        &[("wet_gray_sand", 3), ("dark_gravel", 2), ("gray_sand", 1)],
+        5.0,
+        &[("pebbles", 1)],
+        3.0,
+        0.08,
+    ),
+    beds: [
+        mix(&[("wet_gray_sand", 3), ("dark_gravel", 2)], 6.0),
+        mix(
+            &[("dark_gravel", 2), ("wet_gray_sand", 1), ("dark_silt", 1)],
+            7.0,
+        ),
+        mix(&[("dark_gravel", 2), ("dark_silt", 1)], 8.0),
+    ],
+    topsoil: "ash",
+    subsoil: "burnt_soil",
+    soil_depth: 2.0,
+    stony_slope: 0.4,
+    scree_slope: 0.75,
+    rock_slope: (0.9, 1.4),
+    snow: false,
+    mossy_rock: false,
+};
+
 pub(crate) fn recipe(biome: Biome) -> &'static Recipe {
-    match biome.fallback() {
+    match biome {
         Biome::Plains => &PLAINS,
         Biome::Meadow => &MEADOW,
         Biome::Forest => &FOREST,
@@ -860,9 +1046,10 @@ pub(crate) fn recipe(biome: Biome) -> &'static Recipe {
         Biome::Beach => &BEACH,
         Biome::River => &RIVER,
         Biome::Lake => &LAKE,
-        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
+        Biome::Tropical => &TROPICAL,
+        Biome::SnowyTaiga => &SNOWY_TAIGA,
+        Biome::Tundra => &TUNDRA,
+        Biome::Volcanic => &VOLCANIC,
     }
 }
 

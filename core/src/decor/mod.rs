@@ -381,7 +381,11 @@ impl Decor {
         // Loose rocks.
         let rocky = matches!(
             biome,
-            Biome::Mountains | Biome::Highlands | Biome::AlpineMeadow | Biome::SnowyPeaks
+            Biome::Mountains
+                | Biome::Highlands
+                | Biome::AlpineMeadow
+                | Biome::SnowyPeaks
+                | Biome::Tundra
         );
         let rubble = match zone {
             Zone::Scree => 0.2,
@@ -423,7 +427,14 @@ impl Decor {
         // Moss and lichen carpets lie on full blocks.
         if spot.layers == 8 && !matches!(kind, Kind::Snow | Kind::Ice | Kind::Sand) {
             let base = match (zone, biome) {
-                (Zone::Wood, Biome::Taiga | Biome::Forest | Biome::Swamp) => 0.16,
+                (
+                    Zone::Wood,
+                    Biome::Taiga
+                    | Biome::Forest
+                    | Biome::Swamp
+                    | Biome::Tropical
+                    | Biome::SnowyTaiga,
+                ) => 0.16,
                 (Zone::Wood, _) => 0.08,
                 (Zone::Rock | Zone::Stony, _) if rocky => 0.12,
                 (Zone::Rock, _) => 0.06,
@@ -569,6 +580,10 @@ impl Decor {
         // under the spot holds water.
         let cells = w - spot.y + 1;
         if cells < 0 || (cells == 0) == spot.wet {
+            return;
+        }
+        // Nothing grows up through ice.
+        if sink.get(x, w, z) == self.surface.ice() {
             return;
         }
         let swampy =

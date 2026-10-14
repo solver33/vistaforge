@@ -78,7 +78,7 @@ fn stand(biome: Biome) -> Stand {
         open_size,
         grove_size,
     };
-    match biome.fallback() {
+    match biome {
         Biome::Plains => s(0.014, 0.45, &[(Oak, 8), (Birch, 1), (Bush, 3)], 0.75, 0.5),
         Biome::Meadow => s(0.008, 0.45, &[(Oak, 4), (Birch, 3), (Bush, 3)], 0.65, 0.45),
         Biome::Forest => s(
@@ -148,9 +148,18 @@ fn stand(biome: Biome) -> Stand {
             0.6,
             0.5,
         ),
-        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
+        // Dense broadleaf growth; palms when the trees module has them.
+        Biome::Tropical => s(0.1, 0.45, &[(Oak, 6), (Bush, 4), (Willow, 3)], 0.65, 0.6),
+        Biome::SnowyTaiga => s(
+            0.08,
+            0.42,
+            &[(Spruce, 40), (Pine, 6), (Dead, 1)],
+            0.55,
+            0.55,
+        ),
+        // Treeless: a few low shrubs.
+        Biome::Tundra => s(0.003, 0.0, &[(Bush, 1)], 0.25, 0.25),
+        Biome::Volcanic => s(0.0, 0.0, &[(Bush, 1)], 0.25, 0.25),
     }
 }
 
