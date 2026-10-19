@@ -21,6 +21,7 @@ pub mod presets;
 mod brushes;
 mod edits;
 mod erosion;
+mod features;
 mod grid;
 mod hydro;
 mod layout;
@@ -62,6 +63,8 @@ const TOP: f32 = 300.0;
 const TALL_STRETCH: f64 = 10.0;
 const TALL_DETAIL: f64 = 0.2;
 const TALL_WIDE: f64 = 3.0;
+/// How much higher plateau steps are in a tall world.
+const TALL_TIERS: f64 = 7.0;
 
 struct Fine {
     /// Height change from droplet erosion.
@@ -108,6 +111,10 @@ pub struct Terrain {
     lake_dist: Field,
     /// Height added by hand-placed mountains and ridges.
     lift: Field,
+    /// How far up a volcano each node is: 0 off the cones, 1 at a crater's centre.
+    volcanic: Field,
+    /// Volcanoes carry snow above the snow line (on maps with snowy peaks or winter biomes).
+    cone_snow: bool,
     top2: Vec<Top2>,
     lake: Vec<u32>,
     lake_surface: Vec<i32>,
@@ -289,7 +296,63 @@ impl Terrain {
             None => (Vec::new(), Vec::new()),
         };
         let mscale = 520.0 * wide * (0.75 + 0.5 * clamp(sl.biome_scale));
+        // The first volcano stands in the middle of the land when there is a sea.
+        let inland = sea_mask.as_ref().and_then(|m| {
+            (0..n * n)
+                .filter(|&k| !m[k])
+                .max_by(|&a, &b| to_sea[a].total_cmp(&to_sea[b]))
+                .map(|k| ((k % n) as f64 * CELL, (k / n) as f64 * CELL))
+        });
+        let mut volcanoes = features::volcanoes(seed, size as f64, clamp(sl.volcanoes), inland);
+        for v in &mut volcanoes {
+            // Rims stay well under the soft cap (a tall world stretches them later).
+            v.height = v.height.min(TOP as f64 - 50.0 - sea_f as f64);
+        }
+        let volcano_at = |x: f64, z: f64| volcanoes.iter().map(|v| v.at(seed, x, z)).sum::<f64>();
         let e = &regions.e;
+        // Plateau steps. A tall world adds them after its stretch, so plateau tops stay as
+        // gentle as lowland while the steps between them grow into escarpments hundreds of
+        // blocks high.
+        let tiers = if stretch > 1.0 {
+            features::Tiers::new(
+                seed,
+                size as f64,
+                40.0 * TALL_TIERS * clamp(sl.plateaus),
+                0.3,
+            )
+        } else {
+            features::Tiers::new(seed, size as f64, 40.0 * clamp(sl.plateaus), 0.2)
+        };
+        let inland_reach = (0.2 * size as f64).clamp(150.0, 800.0);
+        let inland_at = |k: usize| match &sea_mask {
+            Some(m) if m[k] => 0.0,
+            Some(_) => smoothstep(0.0, inland_reach, to_sea[k] as f64),
+            None => 1.0,
+        };
+        let node = |k: usize| ((k % n) as f64 * CELL, (k / n) as f64 * CELL);
+        let tier: Vec<f32> = if sl.plateaus > 0.0 {
+            let steps: Vec<f32> = (0..n * n)
+                .map(|k| {
+                    let (x, z) = node(k);
+                    tiers.steps(x, z, e.data[k] as f64, inland_at(k)) as f32
+                })
+                .collect();
+            // A low step walled in by higher ones is filled to its rim, so every step drains
+            // down towards the sea or the map edge instead of holding a lake hundreds of
+            // blocks deep that would have to be cut out through a gorge.
+            let rims = hydro::seeds(&steps, n, sea_mask.as_deref(), 0.0);
+            let filled = hydro::flood(&steps, n, &rims).filled;
+            filled
+                .iter()
+                .enumerate()
+                .map(|(k, v)| {
+                    let (x, z) = node(k);
+                    v + tiers.roll(x, z) as f32
+                })
+                .collect()
+        } else {
+            vec![0.0; n * n]
+        };
         let mut height = Field::from_fn(n, CELL, |i, j| {
             let k = j * n + i;
             let q = param(k);
@@ -308,7 +371,10 @@ impl Terrain {
                     0.62 + 0.38 * fbm(seed ^ 0xB6, x / (mscale * 1.8), z / (mscale * 1.8), 2, 0.5);
                 h += q.ridge as f64 * peaks * r * massif;
             }
-            let mut h = h * relief;
+            let mut h = h * relief + volcano_at(x, z);
+            if stretch <= 1.0 {
+                h += tier[k] as f64;
+            }
             if q.swamp > 0.01 {
                 // Wetlands are flat, just above the whole block their pools and lakes fill to.
                 h = lerp(h, (1.3 * relief).round() + 1.05, q.swamp as f64);
@@ -337,10 +403,14 @@ impl Terrain {
             // or below it less.
             let mut base = height.clone();
             base.blur(24, 2);
-            for (v, b) in height.data.iter_mut().zip(&base.data) {
+            for (k, (v, b)) in height.data.iter_mut().zip(&base.data).enumerate() {
                 let d = (*b - sea_f) as f64;
-                let h =
-                    sea_f as f64 + uplift(d, stretch) + steepening(d, stretch) * (*v - *b) as f64;
+                // Wetlands stay at their water table, on the lowest step.
+                let tier = tier[k] as f64 * (1.0 - param(k).swamp as f64);
+                let h = sea_f as f64
+                    + uplift(d, stretch)
+                    + steepening(d, stretch) * (*v - *b) as f64
+                    + tier;
                 *v = soft_cap(h, top as f64, stretch) as f32;
             }
         }
@@ -375,6 +445,13 @@ impl Terrain {
         }
         let mut lift = Field::new(n, CELL, 0.0);
         edits::landforms(&mut height, &mut lift, &settings.edits, seed);
+        let volcanic = Field::from_fn(n, CELL, |i, j| {
+            let (x, z) = (i as f64 * CELL, j as f64 * CELL);
+            volcanoes
+                .iter()
+                .map(|v| v.cone(seed, x, z))
+                .fold(0.0, f64::max) as f32
+        });
 
         // 3. Erosion.
         let rain: Vec<f32> = regions.w.data.iter().map(|w| 0.7 + 0.6 * w).collect();
@@ -390,6 +467,15 @@ impl Terrain {
             seeds,
         );
         erosion::thermal(&mut height.data, n, CELL as f32, 1.3 * steeper as f32, 4);
+
+        // Crests: ridges and peaks stand out sharper than erosion leaves them (an unsharp mask
+        // that only lifts what is above its surroundings, in the mountains).
+        let mut around = height.clone();
+        around.blur(3, 2);
+        for (k, (v, a)) in height.data.iter_mut().zip(&around.data).enumerate() {
+            let m = smoothstep(0.3, 0.8, mountain.data[k] as f64) as f32;
+            *v += m * (*v - a).max(0.0);
+        }
 
         // 4. Water.
         edits::late(&mut height, &settings.edits, seed);
@@ -489,6 +575,11 @@ impl Terrain {
         bands.spread = steeper as f32;
         // Hand-made peaks use the mix's mountain bands, or rock and snow when it has none.
         let edit_bands = bands.clone();
+        let cone_snow = mix.family.iter().any(|f| f.0 == Biome::SnowyPeaks)
+            || [Biome::SnowyTaiga, Biome::Tundra].iter().any(|&b| {
+                mix.category_of(b)
+                    .is_some_and(|c| mix.categories[c].share > 0.0)
+            });
         // Shore nodes where detail may take the ground under the water join the water's reach.
         let detail_amp = 0.3 + 1.4 * clamp(sl.roughness);
         let fine_margin = if quality == Quality::Full { 3.0 } else { 1.0 };
@@ -536,6 +627,8 @@ impl Terrain {
             sea_dist,
             lake_dist,
             lift,
+            volcanic,
+            cone_snow,
             top2,
             lake: lake_reach,
             lake_surface: w.surface.clone(),
@@ -1134,6 +1227,27 @@ impl Terrain {
             }
         }
 
+        // Volcanoes: green lower flanks, bare ash and basalt on the upper cone, and snow
+        // above the snow line.
+        let cone = self.volcanic.bilinear(fx, fz) as f32;
+        if cone > 0.2 {
+            let bare = smoothstep(0.32, 0.5, (cone + 0.07 * jitter) as f64) as f32;
+            let (band, _, _) = self.edit_bands.resolve(h, feel, jitter);
+            let top = if self.cone_snow && band == Biome::SnowyPeaks {
+                band
+            } else {
+                Biome::Volcanic
+            };
+            if bare >= 0.5 {
+                biome2 = biome;
+                biome = top;
+                blend = 1.0 - bare;
+            } else if bare > blend {
+                biome2 = top;
+                blend = bare;
+            }
+        }
+
         // Biome zones painted by hand.
         for zone in &self.zones {
             let inside = zone.inside(fx, fz) as f32;
@@ -1191,9 +1305,10 @@ impl Terrain {
             .min(self.lake_dist.bilinear(fx, fz) as f32);
         let bias = match land {
             Biome::Swamp | Biome::Marsh => 0.25,
-            Biome::Taiga | Biome::Forest => 0.05,
+            Biome::Tropical => 0.12,
+            Biome::Taiga | Biome::Forest | Biome::SnowyTaiga => 0.05,
             Biome::PineForest => -0.12,
-            Biome::Mountains => -0.1,
+            Biome::Mountains | Biome::Volcanic => -0.1,
             Biome::Beach => -0.1,
             _ => 0.0,
         };
@@ -1216,7 +1331,8 @@ impl Terrain {
             Biome::Mountains => 0.12 + 0.35 * smoothstep(0.25, 0.7, feel as f64) as f32 + outcrop,
             Biome::SnowyPeaks => 0.1,
             Biome::AlpineMeadow | Biome::Highlands => outcrop,
-            Biome::PineForest | Biome::Taiga => 0.4 * outcrop,
+            Biome::Volcanic => 0.2 + 0.3 * smoothstep(0.25, 0.7, feel as f64) as f32 + outcrop,
+            Biome::PineForest | Biome::Taiga | Biome::SnowyTaiga | Biome::Tundra => 0.4 * outcrop,
             _ => 0.0,
         };
         let rock = rock.clamp(0.0, 1.0);
