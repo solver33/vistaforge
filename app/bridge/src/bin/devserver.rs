@@ -67,6 +67,26 @@ struct ConfigArgs {
 }
 
 #[derive(Deserialize)]
+struct OpenWorldArgs {
+    path: PathBuf,
+    #[serde(default)]
+    dimension: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WorldPreviewArgs {
+    x0: i32,
+    z0: i32,
+    size: u32,
+    res: u32,
+}
+
+#[derive(Deserialize)]
+struct WorldSceneArgs {
+    request: vistaforge_bridge::render::SceneRequest,
+}
+
+#[derive(Deserialize)]
 struct RenderArgs {
     settings: WorldSettings,
     request: vistaforge_bridge::render::SceneRequest,
@@ -101,6 +121,27 @@ fn handle(state: &Arc<State>, command: &str, body: &str) -> Result<Reply> {
                 &a.request,
                 &|_, _| {},
             )?))
+        }
+        "open_world" => {
+            let a: OpenWorldArgs = args(body)?;
+            json(state.bridge.open_world(&a.path, a.dimension.as_deref())?)
+        }
+        "close_world" => {
+            state.bridge.close_world();
+            json(())
+        }
+        "world_map" => Ok(Reply::Bytes(state.bridge.world_map(&|_, _| {})?)),
+        "world_preview" => {
+            let a: WorldPreviewArgs = args(body)?;
+            Ok(Reply::Bytes(
+                state.bridge.world_preview(a.x0, a.z0, a.size, a.res)?,
+            ))
+        }
+        "world_scene" => {
+            let a: WorldSceneArgs = args(body)?;
+            Ok(Reply::Bytes(
+                state.bridge.world_scene(&a.request, &|_, _| {})?,
+            ))
         }
         "world_exists" => {
             let a: ExistsArgs = args(body)?;

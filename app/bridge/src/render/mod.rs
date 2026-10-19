@@ -173,17 +173,17 @@ pub fn library<'c>(
 
 /// One generated unit of the area: its columns' cells as palette ids (the high bit marks the
 /// top cell of water), and their colours.
-struct Unit {
-    rect: Rect,
+pub(crate) struct Unit {
+    pub rect: Rect,
     /// Per column, x-major like `Rect::columns`: bottom Y and cell count.
-    columns: Vec<(i32, u32)>,
-    cells: Vec<u32>,
-    grass: Vec<u32>,
-    foliage: Vec<u32>,
-    water: Vec<u32>,
+    pub columns: Vec<(i32, u32)>,
+    pub cells: Vec<u32>,
+    pub grass: Vec<u32>,
+    pub foliage: Vec<u32>,
+    pub water: Vec<u32>,
 }
 
-const TOP_BIT: u32 = 1 << 31;
+pub(crate) const TOP_BIT: u32 = 1 << 31;
 
 /// Builds and packs the scene for `req`. `progress` gets (units done, units in all).
 pub fn build(
@@ -263,10 +263,31 @@ pub fn build(
         let more = resolve(library, blocks.len());
         blocks.extend(more);
     }
+    assemble(
+        &units,
+        &blocks,
+        library,
+        area,
+        side,
+        generator.settings.sea_level,
+        started,
+    )
+}
 
+/// Packs the units of `area` into a scene. `blocks` says how each id in the units' cells
+/// renders. Generated maps and opened worlds both end here.
+pub(crate) fn assemble(
+    units: &[Unit],
+    blocks: &[Arc<RenderBlock>],
+    library: &mut Library,
+    area: Rect,
+    side: i32,
+    sea_level: i32,
+    started: Instant,
+) -> Result<Vec<u8>> {
     // Render states in palette order: the plain look of each id, and its water-top look.
     let mut used: BTreeMap<u32, u16> = BTreeMap::new();
-    for u in &units {
+    for u in units {
         for &c in &u.cells {
             used.entry(c).or_insert(0);
         }
@@ -289,7 +310,7 @@ pub fn build(
     let mut foliage = vec![0u32; s * s];
     let mut water_rgb = vec![0u32; s * s];
     let (mut min_y, mut max_y) = (i32::MAX, i32::MIN);
-    for u in &units {
+    for u in units {
         let mut at = 0usize;
         for (k, (x, z)) in u.rect.columns().enumerate() {
             let (bottom, count) = u.columns[k];
@@ -485,7 +506,7 @@ pub fn build(
         depth: d as u32,
         min_y: if min_y == i32::MAX { MIN_Y } else { min_y },
         max_y: if max_y == i32::MIN { MIN_Y + 1 } else { max_y },
-        sea_level: generator.settings.sea_level,
+        sea_level,
         voxels: voxels.len(),
         states: states.len() / 12,
         quads: quads.len() / 20,

@@ -3779,6 +3779,7 @@ name = "vistaforge-bridge"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "png 0.17.16",
  "serde",
  "serde_json",

@@ -97,7 +97,7 @@
     const c = minimap;
     const p = app.preview;
     const a = render.area;
-    const world = app.settings.size;
+    const world = render.mapSize;
     if (!c) return;
     const ctx = c.getContext('2d');
     if (!ctx) return;
@@ -124,7 +124,7 @@
     const c = minimap;
     if (!c) return;
     const r = c.getBoundingClientRect();
-    const world = app.settings.size;
+    const world = render.mapSize;
     render.center = { x: ((e.clientX - r.left) / r.width) * world, z: ((e.clientY - r.top) / r.height) * world };
   }
 
@@ -164,7 +164,7 @@
 
   const source = $derived(render.scene?.header.source ?? null);
   const folderName = $derived(source?.game_dir?.split(/[\\/]/).filter(Boolean).pop() ?? null);
-  const sizes = $derived(AREA_SIZES.filter((_, i) => i === 0 || AREA_SIZES[i - 1] < app.settings.size));
+  const sizes = $derived(AREA_SIZES.filter((_, i) => i === 0 || AREA_SIZES[i - 1] < render.mapSize));
   const lostError = $derived(render.status?.error ?? null);
 </script>
 
