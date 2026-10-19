@@ -1,6 +1,8 @@
 // What the UI asks of the generator. In the app this is the Tauri shell around the Rust core;
 // in a browser it is either the development server (the real core over HTTP) or a mock.
 
+import type { Scene } from '../render/scene';
+import type { SceneRequest } from '../render/backend';
 import type {
   AppConfig,
   AppInfo,
@@ -9,6 +11,8 @@ import type {
   Instance,
   PreviewData,
   Progress,
+  WorldInfo,
+  WorldMapData,
   WorldSettings,
 } from '../types';
 
@@ -36,6 +40,17 @@ export interface Backend {
   pickSavesDir(current: string | null): Promise<string | null>;
   pickSettingsToOpen(): Promise<string | null>;
   pickSettingsToSave(suggestedName: string): Promise<string | null>;
+
+  // Opened worlds: read only, in the game's own coordinates.
+  pickWorld(savesDir: string | null): Promise<string | null>;
+  openWorld(path: string, dimension: string | null): Promise<WorldInfo>;
+  closeWorld(): Promise<void>;
+  /** The picture of every saved chunk; `onProgress` gets (regions done, regions in all). */
+  worldMap(onProgress: (done: number, total: number) => void): Promise<WorldMapData>;
+  /** A square of the world, as the 3D preview shows a generated map. */
+  worldPreview(x0: number, z0: number, size: number, res: number): Promise<PreviewData>;
+  /** Render mode's scene of a square of the world. */
+  worldScene(request: SceneRequest, onProgress: (done: number, total: number) => void): Promise<Scene>;
 }
 
 declare global {

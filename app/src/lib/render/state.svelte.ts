@@ -2,12 +2,22 @@
 
 import { app } from '../app.svelte';
 import type { WorldSettings } from '../types';
-import { renderBackend, type RenderBackend } from './backend';
+import { renderBackend, type RenderBackend, type SceneRequest } from './backend';
 import type { Scene } from './scene';
 import { loadSettings, saveSettings, type RenderSettings } from './settings';
 import type { TracerStatus } from './tracer';
 
 export type ViewMode = 'preview' | 'render';
+
+/** Where scenes come from instead of the generator: an opened world supplies its own. */
+export interface SceneSource {
+  /** Side of the square that render areas are picked in, in blocks. */
+  readonly size: number;
+  /** Changes when what the source shows changes, so an older render reads as out of date. */
+  readonly key: string;
+  /** The scene of `request`, an area of the square from its north-west corner. */
+  build(request: SceneRequest, onProgress: (done: number, total: number) => void): Promise<Scene>;
+}
 
 export const AREA_SIZES = [256, 512, 1024, 2048];
 
@@ -49,11 +59,16 @@ class RenderState {
   /** What the map looked like when the scene was built. */
   builtKey = $state('');
 
+  /** Set while an opened world, not the generator, provides the scenes. */
+  source = $state.raw<SceneSource | null>(null);
+  /** Side of the square render areas are picked in: the map, or an opened world's area. */
+  mapSize = $derived(this.source?.size ?? app.settings.size);
+
   private backend: RenderBackend | null = null;
 
   /** The area to render, clamped to the map. */
   area = $derived.by(() => {
-    const world = app.settings.size;
+    const world = this.mapSize;
     const size = Math.min(this.size, AREA_SIZES.find((s) => s >= world) ?? 2048);
     const c = this.center ?? { x: world / 2, z: world / 2 };
     const clamp = (v: number) => Math.max(0, Math.min(Math.round(v - size / 2), Math.max(0, world - size)));
@@ -64,6 +79,7 @@ class RenderState {
   stale = $derived(this.scene !== null && this.builtKey !== this.mapKey());
 
   mapKey(): string {
+    if (this.source) return this.source.key;
     const { name: _name, ...shape } = app.settings;
     return JSON.stringify(shape);
   }
@@ -85,7 +101,8 @@ class RenderState {
   async build(): Promise<void> {
     const backend = await this.getBackend();
     if (!backend || this.building) return;
-    if (app.settingsProblem) {
+    const source = this.source;
+    if (app.settingsProblem && !source) {
       this.error = app.settingsProblem;
       return;
     }
@@ -96,11 +113,11 @@ class RenderState {
     try {
       const settings = $state.snapshot(app.settings) as WorldSettings;
       const { x0, z0, size } = this.area;
-      this.scene = await backend.buildScene(
-        settings,
-        { x0, z0, size, game_dir: this.gameDir, catalog_path: app.catalogPath },
-        (done, total) => (this.progress = total > 0 ? done / total : 0),
-      );
+      const request = { x0, z0, size, game_dir: this.gameDir, catalog_path: app.catalogPath };
+      const onProgress = (done: number, total: number) => (this.progress = total > 0 ? done / total : 0);
+      this.scene = source
+        ? await source.build(request, onProgress)
+        : await backend.buildScene(settings, request, onProgress);
       this.builtKey = key;
     } catch (e) {
       this.error = errorText(e);

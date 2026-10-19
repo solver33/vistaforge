@@ -182,6 +182,8 @@ class AppState {
   });
 
   private history = new History('');
+  /** Set while an opened world, not the generator, fills `preview`. */
+  private previewHeld = false;
   private previewInFlight = false;
   private previewQueued = false;
   private previewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -489,11 +491,25 @@ class AppState {
 
   schedulePreview(delay = 150): void {
     clearTimeout(this.previewTimer);
+    if (this.previewHeld) return;
     this.previewTimer = setTimeout(() => void this.runPreview(), delay);
   }
 
+  /**
+   * Stops (or restarts) previews of the generated map while an opened world shows its own.
+   * Restarting brings the generated map's preview back.
+   */
+  holdPreview(held: boolean): void {
+    if (held === this.previewHeld) return;
+    this.previewHeld = held;
+    clearTimeout(this.previewTimer);
+    this.preview = null;
+    this.previewError = null;
+    if (!held) this.schedulePreview(0);
+  }
+
   async runPreview(): Promise<void> {
-    if (!this.backend || !this.catalog) return;
+    if (!this.backend || !this.catalog || this.previewHeld) return;
     if (this.previewInFlight) {
       this.previewQueued = true;
       return;
@@ -508,17 +524,21 @@ class AppState {
     const started = performance.now();
     try {
       const settings = $state.snapshot(this.settings) as WorldSettings;
-      this.preview = await this.backend.preview(settings, this.ui.res);
+      const preview = await this.backend.preview(settings, this.ui.res);
+      // An opened world took over the view meanwhile.
+      if (this.previewHeld) return;
+      this.preview = preview;
       this.previewMs = performance.now() - started;
       this.previewError = null;
     } catch (e) {
-      this.previewError = errorText(e);
+      if (!this.previewHeld) this.previewError = errorText(e);
     } finally {
       this.previewInFlight = false;
-      if (this.previewQueued) {
+      if (this.previewQueued && !this.previewHeld) {
         this.previewQueued = false;
         void this.runPreview();
       } else {
+        this.previewQueued = false;
         this.previewBusy = false;
       }
     }

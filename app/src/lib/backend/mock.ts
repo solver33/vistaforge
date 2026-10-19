@@ -13,10 +13,16 @@ import type {
   PreviewData,
   Progress,
   Sliders,
+  WorldInfo,
+  WorldMapData,
   WorldSettings,
 } from '../types';
+import type { SceneRequest } from '../render/backend';
+import { decodeScene, type Scene } from '../render/scene';
+import { decodeWorldMap, encodeWorldMap } from '../worldmap';
 import type { Backend } from './index';
 import { mockPreview } from './mockTerrain';
+import { mockWorldInfo, mockWorldMap, mockWorldPreview } from './mockWorld';
 
 export interface MockHooks {
   /** How long a pretend export takes. */
@@ -35,6 +41,8 @@ export interface MockHooks {
   worlds?: string[];
   /** Make the next export fail with this message. */
   exportError?: string;
+  /** Extra delay before an opened world's map or area answers. */
+  worldMs?: number;
 }
 
 declare global {
@@ -304,5 +312,56 @@ export class MockBackend implements Backend {
 
   async pickSettingsToSave(suggestedName: string): Promise<string | null> {
     return pick(`C:\\Users\\you\\Documents\\${suggestedName}.json`);
+  }
+
+  async pickWorld(savesDir: string | null): Promise<string | null> {
+    count('pickWorld');
+    return pick(`${savesDir ?? `${GAME}\\saves`}\\Kingdom of Ashford`);
+  }
+
+  async openWorld(path: string, dimension: string | null): Promise<WorldInfo> {
+    count('openWorld');
+    await sleep(80);
+    if (/empty|nothing/i.test(path)) {
+      throw new Error(
+        `no saved chunks in ${path}. Choose a world's own folder: the one inside the saves folder that holds level.dat and a region folder.`,
+      );
+    }
+    const info = mockWorldInfo(path);
+    if (dimension && info.dimensions.includes(dimension)) info.dimension = dimension;
+    return info;
+  }
+
+  async closeWorld(): Promise<void> {
+    count('closeWorld');
+  }
+
+  async worldMap(onProgress: (done: number, total: number) => void): Promise<WorldMapData> {
+    count('worldMap');
+    const delay = hooks().worldMs ?? 0;
+    for (let i = 1; i <= 5; i++) {
+      await sleep(20 + delay / 5);
+      onProgress(i, 5);
+    }
+    return decodeWorldMap(encodeWorldMap(mockWorldMap()));
+  }
+
+  async worldPreview(x0: number, z0: number, size: number, res: number): Promise<PreviewData> {
+    count('worldPreview');
+    const delay = hooks().worldMs ?? 0;
+    if (delay > 0) await sleep(delay);
+    return mockWorldPreview(x0, z0, size, res);
+  }
+
+  async worldScene(request: SceneRequest, onProgress: (done: number, total: number) => void): Promise<Scene> {
+    count('worldScene');
+    for (let i = 1; i <= 4; i++) {
+      await sleep(30);
+      onProgress(i, 4);
+    }
+    const { mockScene } = await import('../render/mockScene');
+    // The made-up scene starts at the map's corner; move the world's square onto it.
+    const settings = { size: 65536, seed: 3 } as WorldSettings;
+    return decodeScene(mockScene(settings, { ...request, x0: request.x0 + 32768, z0: request.z0 + 32768 }));
   }
 }

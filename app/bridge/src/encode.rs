@@ -110,28 +110,67 @@ fn pack(p: &Preview, max_trees: usize) -> Vec<u8> {
     .expect("header serialises");
     pad4(&mut header, b' ');
 
-    let n = p.heights.len();
-    let mut out = Vec::with_capacity(8 + header.len() + n * 13 + trees.len() * 24 + 4);
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&(header.len() as u32).to_le_bytes());
-    out.extend_from_slice(&header);
-    for h in &p.heights {
-        out.extend_from_slice(&h.to_le_bytes());
-    }
-    for w in &p.water {
-        out.extend_from_slice(&w.unwrap_or(f32::NAN).to_le_bytes());
-    }
-    for c in &p.colors {
-        out.extend_from_slice(&[c[0], c[1], c[2], 255]);
-    }
-    out.extend_from_slice(&biome_index);
-    pad4(&mut out, 0);
+    let mut out = body(&header, &p.heights, &p.water, &p.colors, &biome_index);
     for (t, &s) in trees.iter().zip(&tree_species) {
         for v in [t.x, t.y, t.z, t.height, t.crown, s as f32] {
             out.extend_from_slice(&v.to_le_bytes());
         }
     }
     out
+}
+
+/// Everything up to the trees.
+fn body(
+    header: &[u8],
+    heights: &[f32],
+    water: &[Option<f32>],
+    colors: &[[u8; 3]],
+    biome_index: &[u8],
+) -> Vec<u8> {
+    let n = heights.len();
+    let mut out = Vec::with_capacity(8 + header.len() + n * 13 + 4);
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&(header.len() as u32).to_le_bytes());
+    out.extend_from_slice(header);
+    for h in heights {
+        out.extend_from_slice(&h.to_le_bytes());
+    }
+    for w in water {
+        out.extend_from_slice(&w.unwrap_or(f32::NAN).to_le_bytes());
+    }
+    for c in colors {
+        out.extend_from_slice(&[c[0], c[1], c[2], 255]);
+    }
+    out.extend_from_slice(biome_index);
+    pad4(&mut out, 0);
+    out
+}
+
+/// A preview of a square of an opened world: the same layout with Minecraft's biome names
+/// and no trees (crowns are in the colours).
+#[allow(clippy::too_many_arguments)]
+pub fn world_preview(
+    size: u32,
+    res: u32,
+    step: f32,
+    heights: &[f32],
+    water: &[Option<f32>],
+    colors: &[[u8; 3]],
+    biomes: &[String],
+    biome_index: &[u8],
+) -> Vec<u8> {
+    let mut header = serde_json::to_vec(&Header {
+        size,
+        res,
+        step,
+        trees: 0,
+        total_trees: None,
+        biomes: biomes.iter().map(String::as_str).collect(),
+        species: Vec::new(),
+    })
+    .expect("header serialises");
+    pad4(&mut header, b' ');
+    body(&header, heights, water, colors, biome_index)
 }
 
 #[cfg(test)]

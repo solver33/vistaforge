@@ -8,8 +8,9 @@ pub mod config;
 pub mod encode;
 pub mod paths;
 pub mod render;
+pub mod world;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -81,10 +82,17 @@ pub enum ExportOutcome {
 
 pub struct Bridge {
     catalog: Mutex<Option<Arc<Catalog>>>,
+    catalog_path: Mutex<Option<PathBuf>>,
     cancel: AtomicBool,
     exporting: AtomicBool,
     /// The game's models and textures for render mode, read once.
     render: Mutex<Option<render::Cache>>,
+    /// A Minecraft world opened to look at, if any.
+    world: Mutex<Option<Arc<world::OpenWorld>>>,
+    /// Stops drawing the map of a world that is no longer open.
+    world_cancel: Mutex<Arc<AtomicBool>>,
+    /// Face colours from the catalog file, for the map of opened worlds.
+    faces: Mutex<Option<(PathBuf, world::Faces)>>,
 }
 
 impl Default for Bridge {
@@ -106,9 +114,13 @@ impl Bridge {
     pub fn new() -> Self {
         Self {
             catalog: Mutex::new(None),
+            catalog_path: Mutex::new(None),
             cancel: AtomicBool::new(false),
             exporting: AtomicBool::new(false),
             render: Mutex::new(None),
+            world: Mutex::new(None),
+            world_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
+            faces: Mutex::new(None),
         }
     }
 
@@ -132,6 +144,9 @@ impl Bridge {
             seconds: started.elapsed().as_secs_f64(),
         };
         *self.catalog.lock().unwrap() = Some(Arc::new(catalog));
+        *self.catalog_path.lock().unwrap() = Some(path.to_path_buf());
+        // An open world numbered its blocks with the old catalog's faces.
+        *self.world.lock().unwrap() = None;
         Ok(info)
     }
 
@@ -163,6 +178,78 @@ impl Bridge {
         let mut cache = self.render.lock().unwrap();
         let library = render::library(&mut cache, request, &catalog)?;
         render::build(&generator, &catalog, library, request, progress)
+    }
+
+    /// Opens a Minecraft world folder to look at; nothing in it is ever written.
+    pub fn open_world(&self, path: &Path, dimension: Option<&str>) -> Result<world::WorldInfo> {
+        let catalog = self.catalog()?;
+        let catalog_path = self
+            .catalog_path
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
+        let faces = {
+            let mut cached = self.faces.lock().unwrap();
+            match cached.as_ref() {
+                Some((p, f)) if *p == catalog_path => f.clone(),
+                _ => {
+                    let f = Arc::new(if catalog_path.is_file() {
+                        render::library::catalog_faces(&catalog_path)?
+                    } else {
+                        HashMap::new()
+                    });
+                    *cached = Some((catalog_path, f.clone()));
+                    f
+                }
+            }
+        };
+        let opened = world::OpenWorld::open(path, dimension, catalog, faces)?;
+        let info = opened.info.clone();
+        self.close_world();
+        *self.world.lock().unwrap() = Some(Arc::new(opened));
+        Ok(info)
+    }
+
+    pub fn close_world(&self) {
+        let mut cancel = self.world_cancel.lock().unwrap();
+        cancel.store(true, Ordering::SeqCst);
+        *cancel = Arc::new(AtomicBool::new(false));
+        *self.world.lock().unwrap() = None;
+    }
+
+    fn open_world_now(&self) -> Result<Arc<world::OpenWorld>> {
+        self.world
+            .lock()
+            .unwrap()
+            .clone()
+            .context("open a world first")
+    }
+
+    /// The map of every saved chunk of the open world, packed by [`world::map::overview`].
+    pub fn world_map(&self, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<Vec<u8>> {
+        let opened = self.open_world_now()?;
+        let cancel = self.world_cancel.lock().unwrap().clone();
+        world::map::overview(&opened, progress, &cancel)
+    }
+
+    /// A square of the open world for the 3D preview, packed like [`Bridge::preview`].
+    pub fn world_preview(&self, x0: i32, z0: i32, size: u32, res: u32) -> Result<Vec<u8>> {
+        let opened = self.open_world_now()?;
+        world::map::area_preview(&opened, x0, z0, size, res)
+    }
+
+    /// Render mode's scene of a square of the open world (`request` in world coordinates).
+    pub fn world_scene(
+        &self,
+        request: &render::SceneRequest,
+        progress: &(dyn Fn(usize, usize) + Sync),
+    ) -> Result<Vec<u8>> {
+        let catalog = self.catalog()?;
+        let opened = self.open_world_now()?;
+        let mut cache = self.render.lock().unwrap();
+        let library = render::library(&mut cache, request, &catalog)?;
+        world::scene::build(&opened, &catalog, library, request, progress)
     }
 
     /// Writes the world to `<saves_dir>/<settings.name>`. `progress` is called at most about

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app, RESOLUTIONS, type View } from '../lib/app.svelte';
+  import { world } from '../lib/world.svelte';
 
   const VIEWS: { view: View; label: string }[] = [
     { view: '3d', label: '3D' },
@@ -15,12 +16,32 @@
   </div>
 
   <nav class="files">
-    <button class="btn ghost" onclick={() => app.newMap()} title="Start again from the current preset with a new seed">New</button>
-    <button class="btn ghost" onclick={() => app.openSettings()} title="Open map settings (Ctrl+O)">Open…</button>
-    <button class="btn ghost" data-testid="save-settings" onclick={() => app.saveSettings()} title="Save map settings (Ctrl+S)">Save…</button>
-    <span class="sep"></span>
-    <button class="btn ghost icon" data-testid="undo" disabled={!app.canUndo} onclick={() => app.undo()} title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
-    <button class="btn ghost icon" data-testid="redo" disabled={!app.canRedo} onclick={() => app.redo()} title="Redo (Ctrl+Y)" aria-label="Redo">↷</button>
+    {#if world.info}
+      <span class="world" title={world.info.path}>
+        <span class="world-name" data-testid="world-title">{world.info.name}</span>
+        <span class="badge" title="Vistaforge only reads this world and never changes it">read only</span>
+      </span>
+      <button class="btn ghost" data-testid="close-world" onclick={() => world.close()} title="Back to making a new map"
+        >Close world</button
+      >
+    {:else}
+      <button class="btn ghost" onclick={() => app.newMap()} title="Start again from the current preset with a new seed">New</button>
+      <button class="btn ghost" onclick={() => app.openSettings()} title="Open map settings (Ctrl+O)">Open…</button>
+      <button class="btn ghost" data-testid="save-settings" onclick={() => app.saveSettings()} title="Save map settings (Ctrl+S)">Save…</button>
+      <span class="sep"></span>
+      <button class="btn ghost icon" data-testid="undo" disabled={!app.canUndo} onclick={() => app.undo()} title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+      <button class="btn ghost icon" data-testid="redo" disabled={!app.canRedo} onclick={() => app.redo()} title="Redo (Ctrl+Y)" aria-label="Redo">↷</button>
+      <span class="sep"></span>
+      <button
+        class="btn ghost"
+        data-testid="open-world"
+        disabled={!app.catalog || world.opening}
+        onclick={() => world.pick()}
+        title={app.catalog ? 'Look at a world you played: its map, in 3D and in render mode' : 'Choose the block catalog first'}
+      >
+        {world.opening ? 'Opening…' : 'Open world…'}
+      </button>
+    {/if}
   </nav>
 
   <div class="middle">
@@ -40,18 +61,28 @@
   </div>
 
   <div class="export">
-    {#if app.exportProblems.length > 0}
-      <span class="why muted" data-testid="export-why">{app.exportProblems[0]}</span>
+    {#if world.info}
+      <button
+        class="btn"
+        data-testid="open-other-world"
+        disabled={world.opening}
+        onclick={() => world.pick()}
+        title="Open another world from the saves folder">Open another world…</button
+      >
+    {:else}
+      {#if app.exportProblems.length > 0}
+        <span class="why muted" data-testid="export-why">{app.exportProblems[0]}</span>
+      {/if}
+      <button
+        class="btn primary"
+        data-testid="export"
+        disabled={app.exportProblems.length > 0 || app.exportState.phase === 'running'}
+        title={app.exportProblems.join('\n') || 'Write the world into the saves folder'}
+        onclick={() => app.startExport()}
+      >
+        Generate world
+      </button>
     {/if}
-    <button
-      class="btn primary"
-      data-testid="export"
-      disabled={app.exportProblems.length > 0 || app.exportState.phase === 'running'}
-      title={app.exportProblems.join('\n') || 'Write the world into the saves folder'}
-      onclick={() => app.startExport()}
-    >
-      Generate world
-    </button>
   </div>
 </header>
 
@@ -112,6 +143,31 @@
     display: flex;
     align-items: center;
     gap: 10px;
+  }
+
+  .world {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    max-width: 320px;
+    margin-right: 6px;
+  }
+
+  .world-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .badge {
+    flex: none;
+    padding: 1px 7px;
+    border-radius: 9px;
+    font-size: 11px;
+    color: var(--accent);
+    background: var(--accent-soft);
   }
 
   .why {

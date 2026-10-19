@@ -137,3 +137,44 @@ export interface PreviewData {
   totalTrees: number;
   species: SpeciesId[];
 }
+
+/** A Minecraft world opened to look at (app/bridge/src/world). Coordinates are the game's. */
+export interface WorldInfo {
+  path: string;
+  name: string;
+  /** The Minecraft version that last saved it. */
+  version: string | null;
+  data_version: number | null;
+  /** `overworld`, `the_nether` or `the_end`. */
+  dimension: string;
+  /** Dimensions with saved chunks. */
+  dimensions: string[];
+  spawn: [number, number, number];
+  /** Where the player was when the world was last saved, when in this dimension. */
+  player: [number, number, number] | null;
+  regions: number;
+  chunks: number;
+  /** Blocks covered by saved chunks: x0, z0, x1, z1 (the far edges exclusive). */
+  bounds: [number, number, number, number] | null;
+  seconds: number;
+}
+
+/** The picture of every saved chunk of an opened world (decoded by worldmap.ts). */
+export interface WorldMapData {
+  /** Block at the north-west corner. */
+  x0: number;
+  z0: number;
+  /** Blocks per pixel. */
+  scale: number;
+  width: number;
+  height: number;
+  chunks: number;
+  /** Chunks saved by Minecraft before 1.18; the game updates them when they are visited. */
+  old_chunks: number;
+  /** Chunks at the edge of the explored world the game had not finished. */
+  unfinished: number;
+  failed: number;
+  seconds: number;
+  /** RGBA, alpha 0 where nothing was saved. */
+  rgba: Uint8ClampedArray;
+}
