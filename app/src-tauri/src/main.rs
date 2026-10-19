@@ -8,10 +8,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tauri::ipc::{Channel, Response};
+use tauri::ipc::{Channel, InvokeBody, Request, Response};
 use tauri::{AppHandle, Manager, State};
 use vistaforge_bridge::config::{self, AppConfig};
 use vistaforge_bridge::paths::{self, Instance};
+use vistaforge_bridge::render;
 use vistaforge_bridge::{AppInfo, Bridge, CatalogInfo, ExportOutcome};
 use vistaforge_core::engine::Progress;
 use vistaforge_core::settings::WorldSettings;
@@ -54,6 +55,40 @@ async fn preview(
     blocking(move || bridge.preview(&settings, res))
         .await
         .map(Response::new)
+}
+
+/// The scene render mode traces; `on_progress` gets (parts done, parts in all).
+#[tauri::command(rename_all = "snake_case")]
+async fn render_scene(
+    bridge: Shared<'_>,
+    settings: WorldSettings,
+    request: render::SceneRequest,
+    on_progress: Channel<[usize; 2]>,
+) -> Result<Response, String> {
+    let bridge = bridge.inner().clone();
+    blocking(move || {
+        bridge.render_scene(&settings, &request, &|done, total| {
+            on_progress.send([done, total]).ok();
+        })
+    })
+    .await
+    .map(Response::new)
+}
+
+/// Writes a rendered picture: the PNG is the raw body, the path its `path` header in hex
+/// (headers can't carry every file name as it is).
+#[tauri::command]
+fn save_image(request: Request<'_>) -> Result<(), String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("no image data".into());
+    };
+    let hex = request
+        .headers()
+        .get("path")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("no file name")?;
+    let path = render::hex_path(hex).ok_or("bad file name")?;
+    std::fs::write(&path, bytes).map_err(|e| format!("saving {}: {e}", path.display()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -124,6 +159,8 @@ fn main() {
             detect_instances,
             load_catalog,
             preview,
+            render_scene,
+            save_image,
             world_exists,
             export_world,
             cancel_export,
