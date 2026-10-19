@@ -680,22 +680,28 @@ pub(crate) mod tests {
         let side = n("side");
         let mut at = 8 + len;
         let u32s = |b: &[u8]| {
-            b.chunks_exact(4)
-                .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            b.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|w| u32::from_le_bytes(*w))
                 .collect::<Vec<_>>()
         };
         let columns = u32s(&bytes[at..at + 16 * side * side]);
         at += 20 * side * side;
         let voxels = bytes[at..at + 2 * n("voxels")]
-            .chunks_exact(2)
-            .map(|w| u16::from_le_bytes(w.try_into().unwrap()))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|w| u16::from_le_bytes(*w))
             .collect();
         at += (2 * n("voxels")).div_ceil(4) * 4;
         let states = u32s(&bytes[at..at + 48 * n("states")]);
         at += 48 * n("states");
         let quads = bytes[at..at + 80 * n("quads")]
-            .chunks_exact(4)
-            .map(|w| f32::from_le_bytes(w.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| f32::from_le_bytes(*w))
             .collect();
         at += 80 * n("quads");
         let atlas_len = bytes.len() - at;
@@ -769,7 +775,7 @@ pub(crate) mod tests {
         }
         // Quads index the atlas and stay near their cell.
         let tiles = d.header["tiles"].as_u64().unwrap() as f32;
-        for q in d.quads.chunks_exact(20) {
+        for q in d.quads.as_chunks::<20>().0 {
             assert!(q[3] < tiles);
             assert!(q[0..3].iter().all(|c| (-0.5..=1.5).contains(c)));
         }

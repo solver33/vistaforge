@@ -23,11 +23,15 @@ pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
     let rgba = match info.color_type {
         png::ColorType::Rgba => px.to_vec(),
         png::ColorType::Rgb => px
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
         png::ColorType::GrayscaleAlpha => px
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .collect(),
         png::ColorType::Grayscale => px.iter().flat_map(|&g| [g, g, g, 255]).collect(),
@@ -97,7 +101,7 @@ impl Texture {
 
     /// True when no pixel is see-through.
     pub fn opaque(&self) -> bool {
-        self.rgba.chunks_exact(4).all(|p| p[3] == 255)
+        self.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255)
     }
 
     /// The image scaled to `size`×`size`: nearest pixel when growing, box average when
@@ -156,7 +160,7 @@ impl Texture {
     pub fn average(&self) -> u32 {
         let mut sum = [0u64; 3];
         let mut n = 0u64;
-        for p in self.rgba.chunks_exact(4).filter(|p| p[3] >= 128) {
+        for p in self.rgba.as_chunks::<4>().0.iter().filter(|p| p[3] >= 128) {
             for c in 0..3 {
                 sum[c] += p[c] as u64;
             }
@@ -215,7 +219,14 @@ pub(crate) mod tests {
     #[test]
     fn speckles_keep_about_the_coverage() {
         let t = Texture::speckled(0x40a040, 0.4, false, 7);
-        let kept = t.rgba.chunks_exact(4).filter(|p| p[3] == 255).count() as f32 / 256.0;
+        let kept = t
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] == 255)
+            .count() as f32
+            / 256.0;
         assert!((0.2..0.6).contains(&kept), "{kept}");
     }
 }
