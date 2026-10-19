@@ -106,7 +106,9 @@ void main() {
 }
 `;
 
-export const TRACE_FS =
+/** What the path tracer and the quick view share: the scene, the camera, the light, and the
+ * walk through the block grid. */
+const TRACE_LIB =
   HEADER +
   /* glsl */ `
 uniform usampler2D uColumns;
@@ -154,11 +156,6 @@ uniform float uWaves;
 uniform int uBounces;
 uniform float uCloudY;
 uniform float uCloudCover;
-
-layout(location = 0) out vec4 oLm;
-layout(location = 1) out vec4 oM;
-layout(location = 2) out vec4 oLa;
-layout(location = 3) out vec4 oGuide;
 
 const float PI = 3.14159265;
 const float FAR = 1e6;
@@ -554,6 +551,15 @@ vec3 waterGlow(vec3 p) {
   vec3 w = toLinear(texelFetch(uWaterCol, columnOf(p.xz), 0).rgb);
   return w * (uAmbient + uSunE * max(uSunDir.y, 0.0) / PI) * 0.12;
 }
+`;
+
+export const TRACE_FS =
+  TRACE_LIB +
+  /* glsl */ `
+layout(location = 0) out vec4 oLm;
+layout(location = 1) out vec4 oM;
+layout(location = 2) out vec4 oLa;
+layout(location = 3) out vec4 oGuide;
 
 void main() {
   rng = pcg(uint(gl_FragCoord.x) * 1973u + uint(gl_FragCoord.y) * 9277u + uFrame * 26699u);
@@ -895,6 +901,16 @@ void main() {
 }
 `;
 
+const TONE = /* glsl */ `
+vec3 aces(vec3 x) {
+  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+vec3 toSrgb(vec3 c) {
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+`;
+
 /** The picture: light times surface colour plus what came before, exposed and tone mapped. */
 export const COMPOSITE_FS =
   HEADER +
@@ -907,14 +923,9 @@ uniform sampler2D uLa;
 uniform bool uDenoise;
 uniform float uExposure;
 out vec4 oColor;
-
-vec3 aces(vec3 x) {
-  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-vec3 toSrgb(vec3 c) {
-  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-}
+` +
+  TONE +
+  /* glsl */ `
 
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
@@ -928,5 +939,132 @@ void main() {
   // A little dither against banding in the sky.
   float n = fract(sin(dot(vec2(p), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
   oColor = vec4(toSrgb(c) + n / 255.0, 1.0);
+}
+`;
+
+/** The quick view shown while the camera or the light moves: one ray per pixel through its
+ * middle and one to the middle of the sun, with the sky's light and the fog worked out instead
+ * of sampled, so there is no noise to wait for. Water shows the sky in it and what is under
+ * it; nothing is lit by light bounced off other blocks. */
+export const QUICK_FS =
+  TRACE_LIB +
+  /* glsl */ `
+uniform float uExposure;
+/** Sky light on flat ground, and the light the ground sends back up, each over pi. */
+uniform vec3 uSkyUp;
+uniform vec3 uBounce;
+out vec4 oColor;
+` +
+  TONE +
+  /* glsl */ `
+void main() {
+  vec2 ndc = gl_FragCoord.xy / uRes * 2.0 - 1.0;
+  vec3 rd = normalize(uCamFwd + ndc.x * uTanHalfFov * uAspect * uCamRight + ndc.y * uTanHalfFov * uCamUp);
+  vec3 ro = uCamPos;
+  vec3 c = vec3(0.0);
+  vec3 thr = vec3(1.0);
+  bool inWater = false;
+
+  // After the first matte surface, the ray to the sun from it (through the one trace call).
+  bool shadow = false;
+  vec3 so = vec3(0.0), sd = vec3(0.0), sunW = vec3(0.0), sT = vec3(1.0);
+  bool sWater = false;
+  int surfaces = 0;
+
+  for (int it = 0; it < 16; it++) {
+    Hit h;
+    bool any = trace(shadow ? so : ro, shadow ? sd : rd, FAR, shadow ? sWater : inWater, h);
+    if (shadow) {
+      if (any && (h.kind == WENTER || h.kind == WEXIT)) {
+        if (sWater) sT *= exp(-waterSigma(so) * h.t);
+        so += sd * (h.t + 2e-3);
+        sWater = h.kind == WENTER;
+        continue;
+      }
+      if (!any && !sWater) c += sunW * sT * exp(-fogDepthOut(so, sd));
+      break;
+    }
+
+    float segEnd = any ? h.t : uFogFar;
+    if (!inWater && uFogDensity > 0.0) {
+      float keep = exp(-fogDepth(ro, rd, segEnd));
+      c += thr * (1.0 - keep) * (uAmbient + uSunE * phaseHG(dot(rd, uSunDir))) * uFogColor;
+      thr *= keep;
+    }
+    if (inWater) {
+      vec3 tw = exp(-waterSigma(ro) * segEnd);
+      c += thr * (1.0 - tw) * waterGlow(ro);
+      thr *= tw;
+    }
+    if (!any) {
+      if (!inWater) {
+        vec3 sky = skyRad(rd);
+        if (surfaces == 0 && dot(rd, uSunDir) > uSunCos) sky += uSunE / (2.0 * PI * (1.0 - uSunCos));
+        c += thr * sky;
+      }
+      break;
+    }
+
+    vec3 p = ro + rd * h.t;
+    if (h.kind == WENTER || h.kind == WEXIT) {
+      if (++surfaces > 4) break;
+      vec3 n = h.n;
+      if (abs(n.y) > 0.5 && uWaves > 0.0) {
+        vec3 w = waveNormal(p.xz + uOrigin);
+        w.y *= sign(n.y);
+        if (dot(w, rd) < 0.0) n = w;
+      }
+      bool entering = h.kind == WENTER;
+      float cosi = clamp(-dot(rd, n), 0.0, 1.0);
+      vec3 refr = refract(rd, n, entering ? 1.0 / 1.333 : 1.333);
+      if (dot(refr, refr) < 1e-6) {
+        rd = reflect(rd, n);
+        ro = p + h.n * 2e-3;
+        continue;
+      }
+      // The reflection shows the sky only; the rest of the light goes on through.
+      float f = 0.0204 + 0.9796 * pow(1.0 - cosi, 5.0);
+      if (entering) c += thr * f * skyRad(reflect(rd, n));
+      thr *= 1.0 - f;
+      rd = normalize(refr);
+      ro = p - h.n * 2e-3;
+      inWater = entering;
+      continue;
+    }
+
+    // A matte surface: the sky from above, the ground from below, and the sun if it is in view.
+    vec3 alb = clamp(h.albedo, 0.0, 1.0);
+    vec3 n = h.n;
+    c += thr * alb * (uSkyUp * (0.5 + 0.5 * n.y) + uBounce * (0.5 - 0.5 * n.y));
+    float cl = dot(n, uSunDir);
+    if (cl <= 0.0 || uSunE.g <= 0.0) break;
+    shadow = true;
+    so = p + n * 2e-3;
+    sd = uSunDir;
+    sWater = inWater;
+    sunW = thr * alb * uSunE * cl / PI;
+  }
+  oColor = vec4(toSrgb(aces(max(c, 0.0) * uExposure)), 1.0);
+}
+`;
+
+/** Onto the screen: the quick view (drawn into the corner of its image at a lower resolution
+ * while moving) faded into the finished picture by uMix. */
+export const PRESENT_FS =
+  HEADER +
+  /* glsl */ `
+uniform sampler2D uQuick;
+uniform sampler2D uPicture;
+uniform vec2 uSize;
+uniform vec2 uQuickScale;
+uniform vec2 uQuickMax;
+uniform float uMix;
+out vec4 oColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uSize;
+  vec3 q = texture(uQuick, min(uv * uQuickScale, uQuickMax)).rgb;
+  vec3 f = texture(uPicture, uv).rgb;
+  oColor = vec4(mix(q, f, uMix), 1.0);
 }
 `;

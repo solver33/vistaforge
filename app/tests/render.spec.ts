@@ -3,6 +3,15 @@ import type { MockHooks } from '../src/lib/backend/mock';
 
 interface Tracer {
   picture(): Promise<Blob>;
+  quickFrames: number;
+}
+
+/** What the tracer is doing, read past its private fields. */
+async function tracerState(page: Page): Promise<{ samples: number; quick: number; mix: number }> {
+  return page.evaluate(() => {
+    const t = (window as unknown as { __vistaforgeTracer?: Tracer & { samples: number; mix: number } }).__vistaforgeTracer;
+    return { samples: t?.samples ?? -1, quick: t?.quickFrames ?? -1, mix: t?.mix ?? -1 };
+  });
 }
 
 /** Opens the app with the mock backend and render mode set small and quick. */
@@ -73,6 +82,35 @@ test('render mode builds a scene and renders it', async ({ page }) => {
   await page.getByTestId('view-mode-render').click();
   await expect(page.getByTestId('render-status')).toContainText(/Rendering|Finished/, { timeout: 30_000 });
   expect((await calls(page)).renderScene).toBe(1);
+  expect(problems).toEqual([]);
+});
+
+test('moving the camera shows the quick view, and the render fades in once it stops', async ({ page }) => {
+  const problems = await open(page, { calls: {} });
+  await page.getByTestId('view-mode-render').click();
+  await page.getByTestId('render-build').click();
+  await expect.poll(async () => (await tracerState(page)).mix, { timeout: 30_000 }).toBe(1);
+
+  // While the mouse drags, only quick views are drawn and the render waits.
+  const box = (await page.getByTestId('render-canvas').boundingBox())!;
+  const x = box.x + box.width * 0.4;
+  const y = box.y + box.height * 0.5;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  const before = await tracerState(page);
+  for (let i = 1; i <= 6; i++) {
+    await page.mouse.move(x + i * 15, y + i * 3);
+    await page.waitForTimeout(60);
+  }
+  const during = await tracerState(page);
+  expect(during.quick).toBeGreaterThan(before.quick);
+  expect(during.samples).toBe(0);
+  expect(during.mix).toBe(0);
+  await page.mouse.up();
+
+  // Then the render starts and covers the quick view.
+  await expect.poll(async () => (await tracerState(page)).samples, { timeout: 30_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => (await tracerState(page)).mix, { timeout: 30_000 }).toBe(1);
   expect(problems).toEqual([]);
 });
 
