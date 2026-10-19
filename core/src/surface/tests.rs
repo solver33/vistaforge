@@ -300,6 +300,18 @@ fn water_gets_a_light_biome() {
     // Above the water, trees and reeds keep the land's colours.
     assert_eq!(s.minecraft_biome_at(&lake, 60), "minecraft:warm_ocean");
     assert_eq!(s.minecraft_biome_at(&lake, 64), "minecraft:swamp");
+    let sea = ColumnInfo {
+        biome: Biome::Lake,
+        biome2: Biome::Tropical,
+        water: WaterKind::Sea,
+        ..lake
+    };
+    assert_eq!(s.minecraft_biome_at(&sea, 64), "minecraft:jungle");
+    let pond = ColumnInfo {
+        biome2: Biome::Forest,
+        ..sea
+    };
+    assert_eq!(s.minecraft_biome_at(&pond, 64), "minecraft:plains");
     let land = ColumnInfo::dry(70.0, Biome::Forest);
     assert_eq!(s.minecraft_biome(&land), "minecraft:forest");
     // Water in the preview is clearly blue, not black.
@@ -444,7 +456,11 @@ fn cold_water_freezes() {
     }
     assert!(edge > 2 * 64 * 9 / 10, "{edge}");
     assert!(middle > 0);
-    // Frozen land keeps its own biome; its water keeps the light ocean colour.
+    // Frozen land keeps its own biome, also in the air over its rivers and lakes; its water
+    // keeps the light ocean colour.
+    let river = grid.get(5, 15);
+    assert_eq!(s.minecraft_biome_at(river, 60), "minecraft:lukewarm_ocean");
+    assert_eq!(s.minecraft_biome_at(river, 64), "minecraft:snowy_taiga");
     let land = ColumnInfo::dry(65.0, Biome::SnowyTaiga);
     assert_eq!(s.minecraft_biome(&land), "minecraft:snowy_taiga");
     assert_eq!(

@@ -654,13 +654,16 @@ impl Surface {
     }
 }
 
-/// The biome whose Minecraft biome a dry column gets: beaches of volcanic and cold land are
-/// part of that land.
+/// The biome whose Minecraft biome a dry column, or the air over water, gets: beaches of
+/// volcanic and cold land are part of that land, and so is the air over its water and over
+/// tropical water (snow falls on frozen lakes, reeds keep the jungle's green).
 fn shown_biome(col: &ColumnInfo) -> Biome {
-    if col.biome == Biome::Beach && own_shores(col.biome2) {
-        col.biome2
-    } else {
-        col.biome
+    match col.biome {
+        Biome::Beach if own_shores(col.biome2) => col.biome2,
+        Biome::River | Biome::Lake if own_shores(col.biome2) || col.biome2 == Biome::Tropical => {
+            col.biome2
+        }
+        b => b,
     }
 }
 
