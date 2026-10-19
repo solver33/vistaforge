@@ -1,13 +1,14 @@
 // The path tracer behind render mode, in WebGL2. Each frame adds one sample per pixel to
-// running averages (in bands when a whole frame would take too long), and after each sample
-// the denoiser and the tone mapper make the picture. Moving the camera starts over at half
-// resolution until it stops.
+// running averages (a band of rows at a time when a whole frame would take too long), and the
+// denoiser and the tone mapper make the picture from them. While the camera or the light moves, a
+// quick view without noise is drawn instead, at whatever resolution keeps it smooth; once it
+// stops, the render starts over and fades in over the quick view.
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { heightPyramid, medianTop, type Scene } from './scene';
 import { fogDensity, sunDirection, type RenderSettings } from './settings';
-import { ATROUS_FS, COMPOSITE_FS, FULLSCREEN_VS, PREPARE_FS, SKY_FS, TRACE_FS } from './shaders';
+import { ATROUS_FS, COMPOSITE_FS, FULLSCREEN_VS, PREPARE_FS, PRESENT_FS, QUICK_FS, SKY_FS, TRACE_FS } from './shaders';
 import { luminance, skyLight, sunlight, SKY_GAIN, SUN_DIRECT, SUN_POWER, SUN_RADIUS, type Vec3 } from './sky';
 
 export interface TracerStatus {
@@ -26,13 +27,25 @@ const SKY_H = 128;
 const ATROUS_PASSES = 5;
 /** Texture widths for the long data tables. */
 const TABLE_W = 4096;
-/** Frame times that make the next sample split into more bands, or fewer. */
-const SLOW_MS = 70;
-const FAST_MS = 28;
-const MAX_BANDS = 32;
-const START_BANDS = 4;
-/** How long the camera must be still before full resolution comes back. */
+/** What one frame of the render should take, so that the window keeps up with the mouse and
+ * no single draw runs long enough for the system to reset the graphics card. */
+const TRACE_MS = 40;
+/** How often the picture is remade from the samples, once it has a few. */
+const DEVELOP_MS = 120;
+/** How long the camera and the light must be still before the render starts. */
 const SETTLE_MS = 250;
+/** Frame times that make the quick view coarser, or finer, while moving. */
+const QUICK_SLOW_MS = 40;
+const QUICK_FAST_MS = 21;
+/** The coarsest quick view, as a share of the picture's width. */
+const QUICK_MIN = 0.15;
+/** Samples at which the render starts to show over the quick view, and covers it (with the
+ * denoiser; without it the picture needs more before it looks better than the quick view). */
+const FADE_FROM = 1;
+const FADE_FULL = 6;
+const FADE_FULL_RAW = 16;
+/** The shortest fade from the quick view to the render. */
+const FADE_MS = 300;
 
 type Uniforms = Map<string, WebGLUniformLocation | null>;
 
@@ -67,7 +80,7 @@ export class PathTracer {
   private readonly floatBlend: boolean;
   private readonly maxTexture: number;
   private readonly vao: WebGLVertexArrayObject;
-  private readonly programs: Record<'trace' | 'sky' | 'prepare' | 'atrous' | 'composite', Program>;
+  private readonly programs: Record<'trace' | 'quick' | 'sky' | 'prepare' | 'atrous' | 'composite' | 'present', Program>;
   private ready = false;
 
   private scene: Scene | null = null;
@@ -81,6 +94,8 @@ export class PathTracer {
   private sun: Vec3 = [0, 1, 0];
   private sunE: Vec3 = [0, 0, 0];
   private ambient: Vec3 = [0, 0, 0];
+  private skyUp: Vec3 = [0, 0, 0];
+  private bounce: Vec3 = [0, 0, 0];
   private baseExposure = 1;
 
   private sky: Target;
@@ -89,22 +104,40 @@ export class PathTracer {
   private pingA: Target | null = null;
   private pingB: Target | null = null;
   private out: Target | null = null;
+  private quick: Target | null = null;
   private width = 0;
   private height = 0;
 
   private samples = 0;
   private seed = 0;
-  private band = 0;
-  private bands = 1;
-  private bandsNext = 1;
+  /** The next row of this sample to trace, and how many rows to trace per frame. */
+  private row = 0;
+  private rows = 1;
+  /** What a row of one sample has been taking, for choosing `rows`. */
+  private msPerRow = 0;
+  private lastDevelop = 0;
   private started = performance.now();
   private finishedAt = 0;
   private skyDirty = true;
   private pictureDirty = false;
-  private blitDirty = false;
+  private presentDirty = false;
   private moving = false;
   private lastMove = 0;
   private lastFrame = 0;
+  /** What the last frame drew, which is what its time says something about. */
+  private lastDrew: 'quick' | 'trace' | 'none' = 'none';
+  private lastRows = 0;
+
+  private quickDirty = true;
+  /** Share of the picture's width the quick view is drawn at while moving. */
+  private quickShare = 0.5;
+  /** Size of the quick view now in its image, from the corner. */
+  private quickW = 1;
+  private quickH = 1;
+  /** How much of the render shows over the quick view. */
+  private mix = 0;
+  /** Quick views drawn so far (for tests). */
+  quickFrames = 0;
   private lastStatus = 0;
   private raf = 0;
   private lost = false;
@@ -138,10 +171,12 @@ export class PathTracer {
 
     this.programs = {
       trace: this.program(TRACE_FS),
+      quick: this.program(QUICK_FS),
       sky: this.program(SKY_FS),
       prepare: this.program(PREPARE_FS),
       atrous: this.program(ATROUS_FS),
       composite: this.program(COMPOSITE_FS),
+      present: this.program(PRESENT_FS),
     };
     this.sky = this.target(SKY_W, SKY_H, [gl.RGBA16F], gl.LINEAR);
     gl.bindTexture(gl.TEXTURE_2D, this.sky.textures[0]);
@@ -156,7 +191,7 @@ export class PathTracer {
 
     canvas.addEventListener('webglcontextlost', this.onLost);
     this.resize = new ResizeObserver(() => {
-      this.blitDirty = true;
+      this.presentDirty = true;
     });
     this.resize.observe(canvas);
     this.updateLight();
@@ -170,7 +205,7 @@ export class PathTracer {
     this.canvas.removeEventListener('webglcontextlost', this.onLost);
     const gl = this.gl;
     this.dropScene();
-    for (const t of [this.sky, this.accum, this.prep, this.pingA, this.pingB, this.out]) this.dropTarget(t);
+    for (const t of [this.sky, this.accum, this.prep, this.pingA, this.pingB, this.out, this.quick]) this.dropTarget(t);
     for (const p of Object.values(this.programs)) gl.deleteProgram(p.program);
     gl.deleteVertexArray(this.vao);
     gl.getExtension('WEBGL_lose_context')?.loseContext();
@@ -240,11 +275,14 @@ export class PathTracer {
     const display = ['exposure', 'denoise'];
     if (changed.every((k) => display.includes(k))) {
       this.pictureDirty = true;
+      // The quick view has the exposure in it.
+      if (this.mix < 1) this.quickDirty = true;
     } else if (changed.every((k) => k === 'samples')) {
       if (this.samples < settings.samples) this.finishedAt = 0;
       this.pictureDirty = true;
     } else {
-      this.restart();
+      // Like moving the camera: quick views while a slider is dragged, the render after.
+      this.moved();
     }
   }
 
@@ -305,10 +343,8 @@ export class PathTracer {
     }
     const dt = now - this.lastFrame;
     this.lastFrame = now;
-    if (this.moving && now - this.lastMove > SETTLE_MS) {
-      this.moving = false;
-      this.restart();
-    }
+    const lastDrew = this.lastDrew;
+    this.lastDrew = 'none';
     this.fitSize();
     if (this.skyDirty) this.drawSky();
     const gl = this.gl;
@@ -319,34 +355,75 @@ export class PathTracer {
       gl.clear(gl.COLOR_BUFFER_BIT);
       return;
     }
-    if (this.samples < this.settings.samples) {
-      if (this.band === 0) {
-        // Split slow frames into more bands, and join fast ones.
-        if (dt > SLOW_MS && this.bands < MAX_BANDS && !this.moving) this.bandsNext = this.bands * 2;
-        else if (dt < FAST_MS && this.bands > 1) this.bandsNext = this.bands / 2;
-        this.bands = this.bandsNext;
-        this.seed++;
+    if (this.moving && now - this.lastMove > SETTLE_MS) {
+      this.moving = false;
+      // A sharper quick view to judge the shot by while the render gets going.
+      if (this.quickW < this.width) this.quickDirty = true;
+    }
+
+    if (this.quickDirty) {
+      if (this.moving) {
+        // When the last frame drew only the quick view, its time says what that cost.
+        if (lastDrew === 'quick') {
+          if (dt > QUICK_SLOW_MS) this.quickShare *= Math.max(0.6, Math.sqrt(30 / dt));
+          else if (dt < QUICK_FAST_MS) this.quickShare *= 1.12;
+          this.quickShare = Math.min(1, Math.max(QUICK_MIN, this.quickShare));
+        }
+        this.drawQuick(this.quickShare);
+      } else {
+        // At most about four times the cost of a frame while moving.
+        this.drawQuick(Math.min(1, this.quickShare * 2));
       }
-      this.trace(this.band, this.bands);
-      this.band++;
-      if (this.band >= this.bands) {
-        this.band = 0;
+      this.lastDrew = 'quick';
+      this.presentDirty = true;
+    } else if (!this.moving && this.samples < this.settings.samples) {
+      // As many rows as fit in TRACE_MS, going by what the last ones took.
+      if (lastDrew === 'trace' && this.lastRows > 0) {
+        const per = dt / this.lastRows;
+        this.msPerRow = this.msPerRow > 0 ? this.msPerRow * 0.7 + per * 0.3 : per;
+      }
+      if (this.msPerRow > 0) this.rows = Math.round(TRACE_MS / this.msPerRow);
+      this.rows = Math.min(this.height, Math.max(4, this.rows));
+      if (this.row === 0) this.seed++;
+      const rows = Math.min(this.rows, this.height - this.row);
+      this.trace(this.row, rows);
+      this.lastDrew = 'trace';
+      this.lastRows = rows;
+      this.row += rows;
+      if (this.row >= this.height) {
+        this.row = 0;
         this.samples++;
         this.pictureDirty = true;
         if (this.samples >= this.settings.samples) this.finishedAt = now;
       }
     }
-    if (this.pictureDirty && this.samples > 0) {
+    // Remade after every early sample, then now and then: it is not free.
+    const due = this.samples <= FADE_FULL_RAW || this.finishedAt === now || now - this.lastDevelop > DEVELOP_MS;
+    if (!this.moving && this.pictureDirty && this.samples > 0 && due) {
       this.pictureDirty = false;
+      this.lastDevelop = now;
       this.develop();
-      this.blitDirty = true;
+      this.presentDirty = true;
     }
-    if (this.blitDirty && this.out) {
-      this.blitDirty = false;
-      this.blit();
+    // The render shows through the quick view as its samples add up, never faster than FADE_MS.
+    const goal = this.fadeGoal();
+    if (goal > this.mix) {
+      this.mix = Math.min(goal, this.mix + Math.min(dt, 100) / FADE_MS);
+      this.presentDirty = true;
+    }
+    if (this.presentDirty && this.out && this.quick) {
+      this.presentDirty = false;
+      this.present();
     }
     this.status(now, false);
   };
+
+  private fadeGoal(): number {
+    if (this.moving || this.samples === 0) return 0;
+    const st = this.settings;
+    const full = Math.max(FADE_FROM + 1, Math.min(st.samples, st.denoise ? FADE_FULL : FADE_FULL_RAW));
+    return Math.min(1, Math.max(0, (this.samples - FADE_FROM) / (full - FADE_FROM)));
+  }
 
   private status(now: number, compiling: boolean): void {
     const done = this.scene !== null && this.samples >= this.settings.samples;
@@ -370,13 +447,15 @@ export class PathTracer {
 
   private restart(): void {
     this.samples = 0;
-    this.band = 0;
-    // Start a still picture in a few bands, so that no single draw runs long enough for the
-    // system to reset the graphics card; fast cards join them up within a few samples.
-    this.bands = this.moving ? 1 : START_BANDS;
-    this.bandsNext = this.bands;
+    this.row = 0;
+    // Until there is a time to go by, a quarter of the picture per frame.
+    if (this.msPerRow <= 0) this.rows = Math.ceil(this.height / 4);
     this.finishedAt = 0;
     this.started = performance.now();
+    // The old picture is of something else now: back to the quick view.
+    this.mix = 0;
+    this.quickDirty = true;
+    this.presentDirty = true;
   }
 
   private readonly onLost = (e: Event) => {
@@ -405,6 +484,10 @@ export class PathTracer {
     // darker than noon. The brightness sliders are left to change the picture.
     const ground = luminance(sunE) * Math.max(this.sun[1], 0) + luminance(sky.irradiance);
     this.baseExposure = Math.min(12, 1.3 * Math.pow(6 / Math.max(ground, 0.02), 0.6));
+    // For the quick view: the sky's light on flat ground, and what ground of a typical
+    // brightness sends back up onto the undersides.
+    this.skyUp = sky.irradiance.map((c) => (c * s.skyBrightness) / Math.PI) as Vec3;
+    this.bounce = this.skyUp.map((c, i) => 0.3 * (c + (this.sunE[i] * Math.max(this.sun[1], 0)) / Math.PI)) as Vec3;
     this.skyDirty = true;
   }
 
@@ -432,18 +515,17 @@ export class PathTracer {
     if (this.canvas.width !== cw || this.canvas.height !== ch) {
       this.canvas.width = cw;
       this.canvas.height = ch;
-      this.blitDirty = true;
+      this.presentDirty = true;
     }
-    const share = this.settings.scale * (this.moving ? 0.5 : 1);
-    const w = Math.max(1, Math.round(cw * share));
-    const h = Math.max(1, Math.round(ch * share));
+    const w = Math.max(1, Math.round(cw * this.settings.scale));
+    const h = Math.max(1, Math.round(ch * this.settings.scale));
     if (w === this.width && h === this.height && this.accum) return;
     this.width = w;
     this.height = h;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     const gl = this.gl;
-    for (const t of [this.accum, this.prep, this.pingA, this.pingB, this.out]) this.dropTarget(t);
+    for (const t of [this.accum, this.prep, this.pingA, this.pingB, this.out, this.quick]) this.dropTarget(t);
     const acc = this.floatBlend ? gl.RGBA32F : gl.RGBA16F;
     this.accum = this.target(w, h, [acc, acc, acc, acc], gl.NEAREST);
     this.prep = this.target(w, h, [gl.RGBA16F, gl.RGBA16F, gl.RGBA16F], gl.NEAREST);
@@ -451,27 +533,61 @@ export class PathTracer {
     // The second half of the ping-pong writes into the prepare pass's own images.
     this.pingB = this.attach([this.prep.textures[0], this.prep.textures[1]]);
     this.out = this.target(w, h, [gl.RGBA8], gl.LINEAR);
+    this.quick = this.target(w, h, [gl.RGBA8], gl.LINEAR);
+    this.quickW = 1;
+    this.quickH = 1;
+    this.msPerRow = 0;
     this.restart();
   }
 
-  private trace(band: number, bands: number): void {
+  /** One sample for `rows` rows from row `y0`, into the running averages. */
+  private trace(y0: number, rows: number): void {
     const gl = this.gl;
-    const s = this.scene!;
-    const h = s.header;
-    const st = this.settings;
     const p = this.programs.trace;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.accum!.fbo);
     gl.viewport(0, 0, this.width, this.height);
-    const y0 = Math.floor((band * this.height) / bands);
-    const y1 = Math.floor(((band + 1) * this.height) / bands);
     gl.enable(gl.SCISSOR_TEST);
-    gl.scissor(0, y0, this.width, y1 - y0);
+    gl.scissor(0, y0, this.width, rows);
     // The running mean: new = old + (sample − old) / n.
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_CONSTANT_ALPHA);
     gl.blendColor(0, 0, 0, 1 / (this.samples + 1));
     gl.useProgram(p.program);
+    this.sceneUniforms(p, this.width, this.height);
+    gl.uniform1i(this.u(p, 'uBounces'), Math.round(this.settings.bounces));
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3]);
+    this.draw();
+    gl.disable(gl.BLEND);
+    gl.disable(gl.SCISSOR_TEST);
+  }
 
+  /** The quick view into the corner of its image, at `share` of the picture's size. */
+  private drawQuick(share: number): void {
+    const gl = this.gl;
+    const p = this.programs.quick;
+    const w = Math.max(1, Math.round(this.width * share));
+    const h = Math.max(1, Math.round(this.height * share));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.quick!.fbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.BLEND);
+    gl.useProgram(p.program);
+    this.sceneUniforms(p, w, h);
+    gl.uniform1f(this.u(p, 'uExposure'), this.exposure());
+    gl.uniform3fv(this.u(p, 'uSkyUp'), this.skyUp);
+    gl.uniform3fv(this.u(p, 'uBounce'), this.bounce);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    this.draw();
+    this.quickW = w;
+    this.quickH = h;
+    this.quickDirty = false;
+    this.quickFrames++;
+  }
+
+  /** The scene, camera and light, for a picture of resW × resH pixels. */
+  private sceneUniforms(p: Program, resW: number, resH: number): void {
+    const gl = this.gl;
+    const h = this.scene!.header;
+    const st = this.settings;
     const units: [string, WebGLTexture][] = [
       ['uColumns', this.tex.columns],
       ['uWaterCol', this.tex.water],
@@ -509,7 +625,7 @@ export class PathTracer {
     f('uAspect', this.width / this.height);
     f('uAperture', st.aperture * 1.5);
     f('uFocus', Math.max(cam.position.distanceTo(this.controls.target), 0.5));
-    gl.uniform2f(this.u(p, 'uRes'), this.width, this.height);
+    gl.uniform2f(this.u(p, 'uRes'), resW, resH);
     gl.uniform1ui(this.u(p, 'uFrame'), this.seed >>> 0);
 
     v3('uSunDir', this.sun);
@@ -523,14 +639,12 @@ export class PathTracer {
     v3('uFogColor', [1, 1, 1]);
     f('uWaterClarity', Math.max(st.waterClarity, 0.5));
     f('uWaves', st.waves);
-    i('uBounces', Math.round(st.bounces));
     f('uCloudY', st.cloudHeight);
     f('uCloudCover', st.clouds);
+  }
 
-    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3]);
-    this.draw();
-    gl.disable(gl.BLEND);
-    gl.disable(gl.SCISSOR_TEST);
+  private exposure(): number {
+    return this.baseExposure * Math.pow(2, this.settings.exposure);
   }
 
   /** Denoise (if on) and tone map into the picture. */
@@ -581,7 +695,7 @@ export class PathTracer {
     this.bind(cp, 'uM', 3, m);
     this.bind(cp, 'uLa', 4, la);
     gl.uniform1i(this.u(cp, 'uDenoise'), this.settings.denoise ? 1 : 0);
-    gl.uniform1f(this.u(cp, 'uExposure'), this.baseExposure * Math.pow(2, this.settings.exposure));
+    gl.uniform1f(this.u(cp, 'uExposure'), this.exposure());
     this.draw();
     // Leave no target bound for reading as a texture next time round.
     for (let u = 0; u < 5; u++) {
@@ -590,12 +704,25 @@ export class PathTracer {
     }
   }
 
-  private blit(): void {
+  /** The quick view and the render, faded by `mix`, onto the screen. */
+  private present(): void {
     const gl = this.gl;
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.out!.fbo);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-    gl.blitFramebuffer(0, 0, this.width, this.height, 0, 0, this.canvas.width, this.canvas.height, gl.COLOR_BUFFER_BIT, gl.LINEAR);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    const p = this.programs.present;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.disable(gl.BLEND);
+    gl.useProgram(p.program);
+    this.bind(p, 'uQuick', 0, this.quick!.textures[0]);
+    this.bind(p, 'uPicture', 1, this.out!.textures[0]);
+    gl.uniform2f(this.u(p, 'uSize'), this.canvas.width, this.canvas.height);
+    gl.uniform2f(this.u(p, 'uQuickScale'), this.quickW / this.width, this.quickH / this.height);
+    gl.uniform2f(this.u(p, 'uQuickMax'), (this.quickW - 0.5) / this.width, (this.quickH - 0.5) / this.height);
+    gl.uniform1f(this.u(p, 'uMix'), this.mix);
+    this.draw();
+    for (let u = 0; u < 2; u++) {
+      gl.activeTexture(gl.TEXTURE0 + u);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
   }
 
   // ---- WebGL plumbing -------------------------------------------------------------------
