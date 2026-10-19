@@ -15,19 +15,27 @@ async function tracerState(page: Page): Promise<{ samples: number; quick: number
 }
 
 /** Opens the app with the mock backend and render mode set small and quick. */
-async function open(page: Page, hooks: MockHooks = {}) {
+async function open(page: Page, hooks: MockHooks = {}, settings: Record<string, unknown> = {}) {
   const problems: string[] = [];
   page.on('pageerror', (e) => problems.push(e.message));
   page.on('console', (m) => {
     if (m.type() === 'error') problems.push(m.text());
   });
-  await page.addInitScript((h) => {
-    (window as unknown as { __vistaforgeMock: MockHooks }).__vistaforgeMock = h;
-    localStorage.setItem('vistaforge.render.v1', JSON.stringify({ scale: 0.25, samples: 64, fog: 0.3 }));
-  }, hooks);
+  await page.addInitScript(
+    ([h, s]) => {
+      (window as unknown as { __vistaforgeMock: MockHooks }).__vistaforgeMock = h;
+      localStorage.setItem('vistaforge.render.v1', JSON.stringify({ scale: 0.25, samples: 64, fog: 0.3, ...s }));
+    },
+    [hooks, settings] as const,
+  );
   await page.goto('/');
   await expect(page.getByTestId('preview-status')).toContainText('Preview 256×256', { timeout: 20_000 });
   return problems;
+}
+
+/** The render settings as remembered. */
+async function saved(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(() => JSON.parse(localStorage.getItem('vistaforge.render.v1') ?? '{}'));
 }
 
 async function calls(page: Page): Promise<Record<string, number>> {
@@ -66,12 +74,22 @@ test('render mode builds a scene and renders it', async ({ page }) => {
   await expect.poll(() => spread(page), { timeout: 30_000 }).toBeGreaterThan(8);
   expect((await calls(page)).renderScene).toBe(1);
 
-  // Moving the sun starts the picture over; the setting is remembered.
-  await page.getByTestId('render-panel').getByRole('slider', { name: /^Height/ }).fill('10');
+  // A time of day button moves the sun and starts the picture over; the setting is remembered.
+  await page.locator('[data-time="Sunset"]').click();
   await expect(page.getByTestId('render-status')).toContainText(/Rendering|Finished/);
-  await expect
-    .poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('vistaforge.render.v1') ?? '{}').sunElevation))
-    .toBe(10);
+  await expect.poll(async () => (await saved(page)).sunElevation).toBe(0.8);
+  expect((await saved(page)).sunAzimuth).toBe(272);
+  await expect(page.locator('[data-time="Sunset"]')).toHaveClass(/on/);
+
+  // On the dial, the middle is straight overhead and the top edge is the northern horizon.
+  const dial = (await page.getByTestId('sun-dial').boundingBox())!;
+  await page.mouse.click(dial.x + dial.width / 2, dial.y + dial.height / 2);
+  await expect.poll(async () => (await saved(page)).sunElevation).toBeGreaterThan(80);
+  await page.mouse.click(dial.x + dial.width / 2, dial.y + dial.height * 0.1);
+  await expect.poll(async () => (await saved(page)).sunElevation).toBeLessThan(5);
+  const north = Number((await saved(page)).sunAzimuth);
+  expect(north < 5 || north > 355).toBe(true);
+  await expect(page.locator('[data-time="Sunset"]')).not.toHaveClass(/on/);
 
   await page.getByRole('button', { name: 'Save image…' }).click();
   await expect.poll(async () => (await calls(page)).saveImage ?? 0).toBe(1);
@@ -134,6 +152,32 @@ test('after the graphics card drops the render, it carries on once the card is b
   await expect.poll(async () => (await tracerState(page)).samples, { timeout: 30_000 }).toBeGreaterThan(0);
   await expect.poll(() => spread(page), { timeout: 30_000 }).toBeGreaterThan(8);
   expect((await calls(page)).renderScene).toBe(1);
+  expect(problems).toEqual([]);
+});
+
+test('soft clouds, the night sky and the glow render', async ({ page }) => {
+  const problems = await open(page, { calls: {} }, { clouds: 0.6, cloudStyle: 'soft', glow: 1, vignette: 0.5 });
+  await page.getByTestId('view-mode-render').click();
+  await page.getByTestId('render-build').click();
+  await expect.poll(async () => (await tracerState(page)).samples, { timeout: 60_000 }).toBeGreaterThan(1);
+  const noise = () =>
+    page.evaluate(
+      () => (window as unknown as { __vistaforgeTracer: { noiseReady: boolean } }).__vistaforgeTracer.noiseReady,
+    );
+  expect(await noise()).toBe(true);
+  await expect.poll(() => spread(page), { timeout: 30_000 }).toBeGreaterThan(8);
+
+  // The Night button lights the scene by the moon and shows the stars.
+  await page.locator('[data-time="Night"]').click();
+  await expect.poll(async () => (await saved(page)).night).toBe(true);
+  await expect(page.getByTestId('sun-dial')).toHaveAttribute('aria-valuetext', /^Moon/);
+  await expect.poll(async () => (await tracerState(page)).samples, { timeout: 60_000 }).toBeGreaterThan(1);
+  await expect.poll(() => spread(page), { timeout: 30_000 }).toBeGreaterThan(2);
+
+  // Minecraft's own clouds are still there.
+  await page.getByRole('button', { name: 'Blocky' }).click();
+  await expect.poll(async () => (await saved(page)).cloudStyle).toBe('blocky');
+  await expect.poll(async () => (await tracerState(page)).samples, { timeout: 60_000 }).toBeGreaterThan(1);
   expect(problems).toEqual([]);
 });
 

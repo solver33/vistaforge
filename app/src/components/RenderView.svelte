@@ -1,11 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { app } from '../lib/app.svelte';
-  import { DEFAULT_SETTINGS, type RenderSettings } from '../lib/render/settings';
+  import { DEFAULT_SETTINGS, TIME_PRESETS, type RenderSettings, type TimePreset } from '../lib/render/settings';
   import { AREA_SIZES, render } from '../lib/render/state.svelte';
   import { PathTracer, unsupported } from '../lib/render/tracer';
   import Range from './Range.svelte';
   import Section from './Section.svelte';
+  import SunDial from './SunDial.svelte';
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let minimap = $state<HTMLCanvasElement | null>(null);
@@ -20,7 +21,8 @@
   let rememberTimer: ReturnType<typeof setTimeout> | undefined;
 
   const SAMPLES = [64, 256, 1024, 4096];
-  const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  /** Where the camera looks, for the sun dial. */
+  let view = $state<number | null>(null);
   const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
   $effect(() => {
@@ -56,6 +58,20 @@
     };
     c.addEventListener('webglcontextrestored', restored);
     return () => c.removeEventListener('webglcontextrestored', restored);
+  });
+
+  $effect(() => {
+    const t = tracer;
+    if (!t) return;
+    const look = () => {
+      const d = t.camera.getWorldDirection(t.camera.position.clone());
+      if (Math.hypot(d.x, d.z) < 1e-3) return;
+      const a = (Math.atan2(d.x, -d.z) * 180) / Math.PI;
+      view = (a + 360) % 360;
+    };
+    look();
+    t.controls.addEventListener('change', look);
+    return () => t.controls.removeEventListener('change', look);
   });
 
   $effect(() => {
@@ -115,6 +131,21 @@
   function set<K extends keyof RenderSettings>(key: K, value: RenderSettings[K]) {
     render.settings[key] = value;
   }
+
+  function preset(p: TimePreset) {
+    render.settings.sunAzimuth = p.azimuth;
+    render.settings.sunElevation = p.elevation;
+    render.settings.night = p.night;
+  }
+
+  const activePreset = $derived(
+    TIME_PRESETS.find(
+      (p) =>
+        p.night === render.settings.night &&
+        Math.abs(p.azimuth - render.settings.sunAzimuth) < 0.5 &&
+        Math.abs(p.elevation - render.settings.sunElevation) < 0.5,
+    )?.name ?? null,
+  );
 
   function seconds(s: number): string {
     if (s < 60) return `${Math.round(s)} s`;
@@ -209,31 +240,24 @@
         {#if render.error && render.scene}<p class="error-text small">{render.error}</p>{/if}
       </Section>
 
-      <Section title="Sun">
-        <Range
-          label="Direction"
-          help="Where the sun is, clockwise from north."
-          value={render.settings.sunAzimuth}
-          min={0}
-          max={360}
-          step={1}
-          normal={DEFAULT_SETTINGS.sunAzimuth}
-          format={(v) => `${Math.round(v)}° ${COMPASS[Math.round(v / 45) % 8]}`}
-          oninput={(v) => set('sunAzimuth', v)}
+      <Section title="Time of day">
+        <div class="presets">
+          {#each TIME_PRESETS as p (p.name)}
+            <button class:on={activePreset === p.name} onclick={() => preset(p)} data-time={p.name}>{p.name}</button>
+          {/each}
+        </div>
+        <SunDial
+          azimuth={render.settings.sunAzimuth}
+          elevation={render.settings.sunElevation}
+          night={render.settings.night}
+          {view}
+          onchange={(az, el) => {
+            render.settings.sunAzimuth = az;
+            render.settings.sunElevation = el;
+          }}
         />
         <Range
-          label="Height"
-          help="How high the sun stands. Low suns give long shadows and warm light."
-          value={render.settings.sunElevation}
-          min={-4}
-          max={90}
-          step={0.5}
-          normal={DEFAULT_SETTINGS.sunElevation}
-          format={(v) => `${v.toFixed(1)}°`}
-          oninput={(v) => set('sunElevation', v)}
-        />
-        <Range
-          label="Size"
+          label={render.settings.night ? 'Moon size' : 'Sun size'}
           help="A bigger sun gives softer shadow edges."
           value={render.settings.sunSize}
           min={1}
@@ -244,7 +268,7 @@
           oninput={(v) => set('sunSize', v)}
         />
         <Range
-          label="Brightness"
+          label={render.settings.night ? 'Moonlight' : 'Sunlight'}
           value={render.settings.sunBrightness}
           min={0}
           max={3}
@@ -267,9 +291,16 @@
           format={(v) => `${Math.round(v * 100)}%`}
           oninput={(v) => set('skyBrightness', v)}
         />
+        <div class="field">
+          <span>Clouds</span>
+          <span class="segmented" title="Real-looking soft clouds, or Minecraft's flat blocky ones">
+            <button class:on={render.settings.cloudStyle === 'soft'} onclick={() => set('cloudStyle', 'soft')}>Soft</button>
+            <button class:on={render.settings.cloudStyle === 'blocky'} onclick={() => set('cloudStyle', 'blocky')}>Blocky</button>
+          </span>
+        </div>
         <Range
-          label="Clouds"
-          help="Minecraft's flat blocky clouds; they cast shadows too."
+          label="Cover"
+          help="How much of the sky is cloud. Clouds cast shadows, and light shines through their gaps in fog."
           value={render.settings.clouds}
           min={0}
           max={1}
@@ -288,6 +319,30 @@
           format={(v) => `Y ${Math.round(v)}`}
           oninput={(v) => set('cloudHeight', v)}
         />
+        {#if render.settings.cloudStyle === 'soft'}
+          <Range
+            label="Thickness"
+            help="From the clouds' flat undersides to their tops."
+            value={render.settings.cloudThickness}
+            min={10}
+            max={200}
+            step={1}
+            normal={DEFAULT_SETTINGS.cloudThickness}
+            format={(v) => `${Math.round(v)} blocks`}
+            oninput={(v) => set('cloudThickness', v)}
+          />
+          <Range
+            label="Size"
+            help="How big the clouds are across."
+            value={render.settings.cloudSize}
+            min={0.3}
+            max={3}
+            step={0.05}
+            normal={DEFAULT_SETTINGS.cloudSize}
+            format={(v) => `×${v.toFixed(2)}`}
+            oninput={(v) => set('cloudSize', v)}
+          />
+        {/if}
       </Section>
 
       <Section title="Fog">
@@ -371,6 +426,28 @@
           normal={DEFAULT_SETTINGS.aperture}
           format={(v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`)}
           oninput={(v) => set('aperture', v)}
+        />
+        <Range
+          label="Glow"
+          help="Bright light spreading around itself, as through a real lens: a halo round the sun, glinting water."
+          value={render.settings.glow}
+          min={0}
+          max={1}
+          step={0.01}
+          normal={DEFAULT_SETTINGS.glow}
+          format={(v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`)}
+          oninput={(v) => set('glow', v)}
+        />
+        <Range
+          label="Vignette"
+          help="Darker corners, as in an old lens."
+          value={render.settings.vignette}
+          min={0}
+          max={1}
+          step={0.01}
+          normal={DEFAULT_SETTINGS.vignette}
+          format={(v) => (v === 0 ? 'Off' : `${Math.round(v * 100)}%`)}
+          oninput={(v) => set('vignette', v)}
         />
         <Range
           label="Exposure"
@@ -584,6 +661,34 @@
   .wide {
     width: 100%;
     justify-content: center;
+  }
+
+  .presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 4px 0 6px;
+  }
+
+  .presets button {
+    flex: 1 0 auto;
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .presets button:hover {
+    color: var(--text);
+  }
+
+  .presets button.on {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .check {
