@@ -77,6 +77,8 @@ const NORMAL: Sliders = {
   biome_scale: 0.5,
   sea: 0,
   islands: 0.5,
+  plateaus: 0,
+  volcanoes: 0,
 };
 
 function preset(
