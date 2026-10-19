@@ -19,6 +19,10 @@ const BIOMES: Record<string, string> = {
   beach: '#e0cf98',
   river: '#4d8fc4',
   lake: '#3d79b0',
+  tropical: '#3f9a4a',
+  snowy_taiga: '#8fa8a0',
+  tundra: '#b0ad92',
+  volcanic: '#5e534d',
 };
 
 function fromName(id: string): string {
@@ -31,8 +35,8 @@ export function biomeColor(id: string): string {
 }
 
 export interface SpeciesStyle {
-  /** Crown shape in the 3D view. */
-  crown: 'round' | 'cone' | 'droop' | 'bush' | 'none';
+  /** Crown shape in the 3D view: `palm` is a flat star of fronds on a tall bare trunk, `canopy` a wide, flat-topped crown. */
+  crown: 'round' | 'cone' | 'droop' | 'bush' | 'palm' | 'canopy' | 'none';
   leaves: string;
   bark: string;
 }
@@ -45,6 +49,9 @@ const SPECIES: Record<string, SpeciesStyle> = {
   willow: { crown: 'droop', leaves: '#68883f', bark: '#56493a' },
   dead: { crown: 'none', leaves: '#6b5a44', bark: '#6e6152' },
   bush: { crown: 'bush', leaves: '#4b6d2f', bark: '#4b3c2c' },
+  palm: { crown: 'palm', leaves: '#6c9a3a', bark: '#8b7a5e' },
+  jungle: { crown: 'canopy', leaves: '#2f6a2b', bark: '#6a5a44' },
+  snowy_spruce: { crown: 'cone', leaves: '#9fb3ab', bark: '#4a3828' },
 };
 
 export function speciesStyle(id: string): SpeciesStyle {

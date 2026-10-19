@@ -3,7 +3,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { speciesStyle } from './palette';
+import { speciesStyle, type SpeciesStyle } from './palette';
 import type { PreviewData } from './types';
 
 export interface SceneOptions {
@@ -17,6 +17,26 @@ const SKY = new THREE.Color('#a9c6dc');
 const WATER = new THREE.Color('#2e6a8e');
 /** Most trees drawn; beyond this, an even sample is shown. The bridge sends no more. */
 const MAX_TREES = 120_000;
+interface CrownShape {
+  trunk: number;
+  flat: number;
+  centre: (h: number, r: number) => number;
+}
+
+/**
+ * For each crown shape: how far up the tree the trunk goes (share of its height), and for a
+ * rounded crown its height as a share of its width and where its centre sits.
+ */
+const SHAPES: Record<SpeciesStyle['crown'], CrownShape> = {
+  round: { trunk: 0.62, flat: 0.82, centre: (h, r) => h - r * 0.8 },
+  cone: { trunk: 0.35, flat: 0, centre: () => 0 },
+  droop: { trunk: 0.6, flat: 0.75, centre: (h, r) => h - r * 0.55 },
+  bush: { trunk: 0, flat: 0.7, centre: (_, r) => r * 0.55 },
+  palm: { trunk: 0.92, flat: 0.28, centre: (h, r) => h - r * 0.12 },
+  canopy: { trunk: 0.75, flat: 0.45, centre: (h, r) => h - r * 0.4 },
+  none: { trunk: 1, flat: 0, centre: () => 0 },
+};
+
 /** Above this many trees, crowns use fewer triangles: they are a few pixels wide anyway. */
 const DENSE_TREES = 30_000;
 
@@ -410,9 +430,9 @@ export class PreviewScene {
       const h = Math.max(1.5, p.trees[o + 3]);
       const r = Math.max(0.8, p.trees[o + 4]);
       const style = speciesStyle(p.species[p.trees[o + 5]] ?? '');
-      const trunkR = Math.max(0.45, h * 0.035);
-      const trunkTop =
-        style.crown === 'cone' ? h * 0.35 : style.crown === 'none' ? h : style.crown === 'droop' ? h * 0.6 : h * 0.62;
+      const shape = SHAPES[style.crown];
+      const trunkR = style.crown === 'palm' ? Math.max(0.35, h * 0.022) : Math.max(0.45, h * 0.035);
+      const trunkTop = shape.trunk * h;
       if (style.crown !== 'bush') {
         m.compose(pos.set(x, y, z), q, scale.set(trunkR, trunkTop, trunkR));
         trunks.setMatrixAt(at.trunk, m);
@@ -423,9 +443,7 @@ export class PreviewScene {
         cones.setMatrixAt(at.cone, m);
         cones.setColorAt(at.cone++, c.set(style.leaves));
       } else if (style.crown !== 'none') {
-        const [sy, cy] =
-          style.crown === 'bush' ? [0.7, r * 0.55] : style.crown === 'droop' ? [0.75, h - r * 0.55] : [0.82, h - r * 0.8];
-        m.compose(pos.set(x, y + cy, z), q, scale.set(r, r * sy, r));
+        m.compose(pos.set(x, y + shape.centre(h, r), z), q, scale.set(r, r * shape.flat, r));
         rounds.setMatrixAt(at.round, m);
         rounds.setColorAt(at.round++, c.set(style.leaves));
       }

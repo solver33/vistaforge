@@ -20,6 +20,12 @@ export const SLIDER_GROUPS: SliderGroup[] = [
       { key: 'mountains', label: 'Mountains', help: 'How much of the map is mountain ranges.' },
       { key: 'erosion', label: 'Erosion', help: 'Valleys, gullies and ridges carved by water: the main realism control.' },
       { key: 'roughness', label: 'Roughness', help: 'Small-scale bumpiness of the ground.' },
+      {
+        key: 'plateaus',
+        label: 'Plateaus',
+        help: 'Map-scale steps: broad plateaus at different heights on escarpments.',
+      },
+      { key: 'volcanoes', label: 'Volcanoes', help: 'Volcanoes with craters; more and bigger towards the right.' },
     ],
   },
   {
