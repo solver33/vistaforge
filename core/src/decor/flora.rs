@@ -680,6 +680,122 @@ const BARE: Community = Community {
     drifts: &[("thyme", 1), ("harebell", 1)],
 };
 
+const TROPICAL_WOOD: Community = Community {
+    density: 0.62,
+    patch: 5.0,
+    background: &[
+        ("jungle_ground_cover", 3),
+        ("lush_grass", 2),
+        ("fern", 2),
+        ("grass", 1),
+    ],
+    background_share: 0.35,
+    drifts: &[
+        ("thick_fern", 3),
+        ("large_fern", 2),
+        ("large_fern_1", 2),
+        ("large_fern_2", 2),
+        ("harts_tongue_fern", 2),
+        ("fern_1", 2),
+        ("fern_2", 2),
+        ("jungle_ground_cover", 2),
+        ("blue_orchid", 1),
+        ("white_clematis", 1),
+        ("beautyberry_bush", 1),
+        ("wild_shrub", 1),
+        ("dark_wild_shrub", 1),
+        ("young_tree", 1),
+    ],
+};
+
+const TROPICAL_OPEN: Community = Community {
+    density: 0.8,
+    patch: 6.0,
+    background: &[
+        ("lush_grass", 3),
+        ("grass", 2),
+        ("sweet_grass", 1),
+        ("common_meadow_grass", 1),
+    ],
+    background_share: 0.4,
+    drifts: &[
+        ("tall_grass", 3),
+        ("large_fern", 2),
+        ("jungle_ground_cover", 2),
+        ("thick_fern", 2),
+        ("blue_orchid", 1),
+        ("birdsfoot_trefoil", 1),
+        ("wild_dagga", 1),
+        ("beautyberry_bush", 1),
+        ("white_clematis", 1),
+    ],
+};
+
+const TROPICAL_WET: Community = Community {
+    density: 0.75,
+    patch: 5.0,
+    background: &[("lush_grass", 2), ("sedge", 2), ("rushes", 1)],
+    background_share: 0.35,
+    drifts: &[
+        ("papyrus", 3),
+        ("thick_fern", 2),
+        ("blue_orchid", 1),
+        ("water_mint", 1),
+        ("cattails", 1),
+        ("greater_fen_sedge", 1),
+    ],
+};
+
+/// Snowy taiga, where the ground shows through the snow under the trees.
+const SNOWY_WOOD: Community = Community {
+    density: 0.3,
+    patch: 6.0,
+    background: TAIGA_GRASS,
+    background_share: 0.4,
+    drifts: &[
+        ("lingonberry_bush", 3),
+        ("bilberry_bush", 2),
+        ("dead_grass", 2),
+        ("fern_1", 1),
+        ("large_fern_3", 1),
+        ("wood_horsetail", 1),
+        ("young_frozen_tree", 1),
+    ],
+};
+
+/// Tundra between the snow drifts: low shrubs, cotton grass and berries.
+const TUNDRA_OPEN: Community = Community {
+    density: 0.5,
+    patch: 7.0,
+    background: &[
+        ("sheeps_fescue", 2),
+        ("wavy_hair_grass", 2),
+        ("dead_grass", 2),
+        ("deergrass", 1),
+    ],
+    background_share: 0.4,
+    drifts: &[
+        ("cotton_grass", 3),
+        ("autumnal_dwarf_birch", 3),
+        ("lingonberry_bush", 2),
+        ("bog_blueberry_bush", 2),
+        ("heather", 2),
+        ("cross_leaved_heath", 1),
+        ("purple_moor_grass", 1),
+        ("young_frozen_tree", 1),
+        ("dead_shrubs", 1),
+    ],
+};
+
+/// Ash and cinders: almost bare, a few pioneers.
+const ASH: Community = Community {
+    density: 0.05,
+    patch: 5.0,
+    background: &[("dead_grass", 2), ("sheeps_fescue", 1)],
+    background_share: 0.6,
+    drifts: &[("dead_shrubs", 2), ("fern_1", 1), ("dead_bush", 1)],
+};
+
 const NOTHING: Community = Community {
     density: 0.0,
     patch: 4.0,
@@ -690,9 +806,17 @@ const NOTHING: Community = Community {
 
 pub(crate) fn community(biome: Biome, zone: Zone) -> &'static Community {
     use Biome as B;
-    match (biome.fallback(), zone) {
+    match (biome, zone) {
         (B::SnowyPeaks, _) | (_, Zone::Bed(_)) => &NOTHING,
+        (B::Volcanic, _) => &ASH,
         (_, Zone::Rock) | (_, Zone::Scree) => &BARE,
+        (B::Tropical, Zone::Wood) => &TROPICAL_WOOD,
+        (B::Tropical, Zone::Wet | Zone::Shore) => &TROPICAL_WET,
+        (B::Tropical, _) => &TROPICAL_OPEN,
+        (B::SnowyTaiga, Zone::Wood) => &SNOWY_WOOD,
+        (B::SnowyTaiga | B::Tundra, Zone::Wet | Zone::Shore) => &BOG,
+        (B::SnowyTaiga | B::Tundra, Zone::Stony) => &BARE,
+        (B::SnowyTaiga | B::Tundra, _) => &TUNDRA_OPEN,
         (B::Beach, _) => &DUNES,
         (B::Swamp, Zone::Shore | Zone::Wet) => &SWAMP_WET,
         (B::Swamp, _) => &SWAMP_LAND,
@@ -718,9 +842,6 @@ pub(crate) fn community(biome: Biome, zone: Zone) -> &'static Community {
         (B::Mountains, _) => &MOUNTAIN_OPEN,
         (B::AlpineMeadow, Zone::Wood) => &TAIGA_WOOD,
         (B::AlpineMeadow, _) => &ALPINE_OPEN,
-        (B::Tropical | B::SnowyTaiga | B::Tundra | B::Volcanic, _) => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
     }
 }
 
@@ -745,7 +866,19 @@ pub(crate) fn emergent(biome: Biome) -> &'static [(&'static str, u32)] {
             ("thick_rushes", 2),
             ("greater_fen_sedges", 1),
         ],
-        Biome::SnowyPeaks => &[],
+        Biome::Tropical => &[
+            ("papyrus", 3),
+            ("cattail_reeds", 2),
+            ("giant_wild_reeds", 2),
+            ("rushes", 1),
+        ],
+        // Winter: dead, straw-coloured reeds at the edges of the ice.
+        Biome::Tundra | Biome::SnowyTaiga => &[
+            ("summer_dead_reeds", 2),
+            ("dry_reeds", 1),
+            ("dead_reeds", 1),
+        ],
+        Biome::SnowyPeaks | Biome::Volcanic => &[],
         _ => &[
             ("cattail_reeds", 3),
             ("giant_wild_reeds", 2),
@@ -764,8 +897,8 @@ pub(crate) fn floating(biome: Biome) -> &'static [(&'static str, u32)] {
             ("big_water_lilies", 1),
             ("white_water_lilies", 1),
         ],
-        Biome::SnowyPeaks => &[("floating_ice", 1)],
-        Biome::River | Biome::Mountains | Biome::Beach => &[],
+        Biome::SnowyPeaks | Biome::Tundra | Biome::SnowyTaiga => &[("floating_ice", 1)],
+        Biome::River | Biome::Mountains | Biome::Beach | Biome::Volcanic => &[],
         _ => &[
             ("white_water_lilies", 2),
             ("big_water_lilies", 2),
@@ -794,6 +927,15 @@ pub(crate) fn carpets(biome: Biome) -> &'static [(&'static str, u32)] {
             ("wolf_lichen", 1),
         ],
         Biome::Beach => &[("maritime_sunburst_lichen", 1)],
+        Biome::Tropical => &[("green_sphagnum_moss", 3), ("dark_green_sphagnum_moss", 3)],
+        Biome::SnowyTaiga => &[("reindeer_lichen", 2), ("green_sphagnum_moss", 1)],
+        Biome::Tundra => &[
+            ("reindeer_lichen", 3),
+            ("alpine_bearberry", 2),
+            ("red_sphagnum_moss", 1),
+            ("yellow_sphagnum_moss", 1),
+        ],
+        Biome::Volcanic => &[],
         _ => &[("green_sphagnum_moss", 2), ("wolf_lichen", 1)],
     }
 }
@@ -823,6 +965,12 @@ fn all_names() -> Vec<&'static str> {
         &DAMP,
         &STONY,
         &BARE,
+        &TROPICAL_WOOD,
+        &TROPICAL_OPEN,
+        &TROPICAL_WET,
+        &SNOWY_WOOD,
+        &TUNDRA_OPEN,
+        &ASH,
     ];
     let mut names: Vec<&str> = communities
         .iter()
