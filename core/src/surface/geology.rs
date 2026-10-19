@@ -1,11 +1,13 @@
 //! Geology: which rocks a region is made of. Regions a few hundred blocks across each get a rock
 //! suite; inside it, rocks alternate in tilted, wavy strata a few blocks thick, so cliffs,
-//! ravines and steep slopes show banded rock. Scree, boulders and loose rocks use the same suite,
-//! so they match the cliffs they fell from.
+//! ravines and steep slopes show banded rock. The beds run on across region borders: there the
+//! two suites' beds interfinger over a wide band, each bed ending at its own ragged line, so a
+//! mountain never changes rock along one seam. Scree, boulders and loose rocks use the same
+//! suites, so they match the cliffs they fell from.
 
-use crate::noise::{fbm2, hash2};
+use crate::noise::{fbm2, hash2, unit2};
 
-use super::field::{hash_unit, patch, pick, salt};
+use super::field::{hash_unit, patch, patches_near, pick, salt, smoothstep};
 use super::materials::{Kit, Mat};
 
 pub(crate) struct Suite {
@@ -161,16 +163,33 @@ pub(crate) struct Geology {
     weights: Vec<(usize, u32)>,
 }
 
+/// Most suites whose beds show in one column (a corner where three regions meet, plus volcanic
+/// rock).
+const MAX_BEDS: usize = 4;
+
 /// The strata of one column: which rock is at each height.
 #[derive(Clone, Copy)]
 pub(crate) struct Strata {
+    /// The suite the column's loose rock, debris and boulders come from: near a border, one of
+    /// the suites meeting there, picked in patches.
     pub suite: usize,
     warp: f64,
-    salt: u64,
+    /// The suites whose beds show in the column, with how strongly (1 inside their region,
+    /// fading to 0 a little way past its border).
+    beds: [(usize, f32); MAX_BEDS],
+    count: usize,
 }
 
 /// Size of a geological region in blocks.
 const REGION: f64 = 700.0;
+
+/// How far past a region's border its beds still reach, in warped blocks. Near a border the
+/// beds of the two regions interfinger, each bed ending at its own place, so a cliff never
+/// changes rock along one seam.
+const INTERFINGER: f64 = 150.0;
+
+/// How far, in blocks, the reach of a region's beds wanders in and out along its border.
+const WANDER: f64 = 60.0;
 
 impl Geology {
     pub fn new(seed: u64, kit: &Kit) -> Self {
@@ -200,43 +219,109 @@ impl Geology {
         }
     }
 
-    pub fn suite_at(&self, x: i32, z: i32) -> usize {
-        let h = patch(self.seed, salt::GEOLOGY, x, z, REGION);
-        pick(&self.weights, hash_unit(h))
-    }
-
-    pub fn strata(&self, x: i32, z: i32) -> Strata {
-        self.strata_of(x, z, self.suite_at(x, z))
-    }
-
-    /// The strata of a column made of a given suite.
-    pub fn strata_of(&self, x: i32, z: i32, suite: usize) -> Strata {
+    /// The strata of a column. `volcanic` is how much of the column's land is volcanic (0..1):
+    /// volcanic rock takes over from the region's rock bed by bed as it rises towards 1.
+    pub fn strata(&self, x: i32, z: i32, volcanic: f32) -> Strata {
         let (fx, fz) = (x as f64, z as f64);
         let s = self.seed ^ salt::GEOLOGY;
-        // Gently tilted, wavy beds.
+        // Gently tilted, wavy beds, the same in every suite so that beds run on across borders.
         let warp = 7.0 * fbm2(s ^ 1, fx / 140.0, fz / 140.0, 3)
             + 1.5 * fbm2(s ^ 2, fx / 17.0, fz / 17.0, 2)
             + 0.02 * fx
             - 0.013 * fz;
+
+        let mut beds = [(0usize, 0.0f32); MAX_BEDS];
+        let mut count = 0;
+        let mut add = |suite: usize, w: f32| {
+            if w <= 0.0 {
+                return;
+            }
+            match beds[..count].iter_mut().find(|b| b.0 == suite) {
+                Some(b) => b.1 = b.1.max(w),
+                None if count < MAX_BEDS => {
+                    beds[count] = (suite, w);
+                    count += 1;
+                }
+                None => {}
+            }
+        };
+        let volcanic = volcanic.clamp(0.0, 1.0);
+        let land = (2.0 * (1.0 - volcanic)).min(1.0);
+        if land > 0.0 {
+            let near: Vec<_> = patches_near(self.seed, salt::GEOLOGY, x, z, REGION).collect();
+            let nearest = near.iter().map(|p| p.0).fold(f64::MAX, f64::min);
+            let mut regions: Vec<_> = near
+                .into_iter()
+                .filter(|&(d, _)| d - nearest < INTERFINGER + WANDER)
+                .map(|(d, h)| {
+                    // Each region reaches further in some places than others, so where a bed
+                    // runs flat over a wide area it ends along a ragged line, not a straight one.
+                    let reach = WANDER * fbm2(h ^ s, fx / 50.0, fz / 50.0, 3)
+                        + 3.0 * (unit2(h ^ s, x as i64, z as i64) - 0.5);
+                    let past = ((d - nearest + reach) as f32).max(0.0);
+                    let w = 1.0 - smoothstep(0.0, INTERFINGER as f32, past);
+                    (pick(&self.weights, hash_unit(h)), w)
+                })
+                .filter(|r| r.1 > 0.0)
+                .collect();
+            regions.sort_by(|a, b| b.1.total_cmp(&a.1));
+            for (suite, w) in regions {
+                add(suite, w * land);
+            }
+        }
+        add(VOLCANIC, (2.0 * volcanic).min(1.0));
+
+        // Loose rock comes from the suites in patches, in proportion to how strongly each shows.
+        let total: f32 = beds[..count].iter().map(|b| b.1).sum();
+        let mut u = hash_unit(patch(self.seed, salt::GEOLOGY ^ 0x1005E, x, z, 9.0)) * total;
+        let mut suite = beds[0].0;
+        for &(sv, w) in &beds[..count] {
+            suite = sv;
+            if u < w {
+                break;
+            }
+            u -= w;
+        }
         Strata {
             suite,
             warp,
-            salt: s ^ ((suite as u64) << 8),
+            beds,
+            count,
         }
     }
 
-    /// The rock at height `y` of a column.
-    pub fn rock(&self, st: &Strata, y: i32) -> Mat {
-        let s = &self.suites[st.suite];
-        let band = ((y as f64 + st.warp) / s.band).floor() as i64;
-        pick(&s.rocks, hash_unit(hash2(st.salt, band, 0x5747)))
+    fn salt(&self, suite: usize) -> u64 {
+        self.seed ^ salt::GEOLOGY ^ ((suite as u64) << 8)
     }
 
-    /// The moss-grown version of a rock, if the suite has one.
-    pub fn mossy(&self, st: &Strata, rock: Mat) -> Option<Mat> {
-        self.suites[st.suite]
-            .mossy
+    /// The rock at height `y` of a column. Where several suites show, each bed belongs to one
+    /// of them: the stronger a suite shows, the more of its beds win.
+    pub fn rock(&self, st: &Strata, y: i32) -> Mat {
+        let band = |suite: usize| ((y as f64 + st.warp) / self.suites[suite].band).floor() as i64;
+        let mut best = (st.beds[0].0, band(st.beds[0].0));
+        if st.count > 1 {
+            let mut top = f32::MIN;
+            for &(suite, w) in &st.beds[..st.count] {
+                let b = band(suite);
+                let score = w * hash_unit(hash2(self.salt(suite), b, 0xBED5));
+                if score > top {
+                    top = score;
+                    best = (suite, b);
+                }
+            }
+        }
+        let (suite, b) = best;
+        pick(
+            &self.suites[suite].rocks,
+            hash_unit(hash2(self.salt(suite), b, 0x5747)),
+        )
+    }
+
+    /// The moss-grown version of a rock, if its suite has one.
+    pub fn mossy(&self, rock: Mat) -> Option<Mat> {
+        self.suites
             .iter()
+            .flat_map(|s| s.mossy.iter())
             .find(|(a, _)| *a == rock)
             .map(|(_, b)| *b)
     }
@@ -248,14 +333,5 @@ impl Geology {
     /// A rock for a boulder of the suite, for a uniform `u`.
     pub fn boulder(&self, suite: usize, u: f32) -> Mat {
         pick(&self.suites[suite].boulder, u)
-    }
-
-    /// The moss-grown version of a rock in any suite.
-    pub fn mossy_any(&self, rock: Mat) -> Option<Mat> {
-        self.suites
-            .iter()
-            .flat_map(|s| s.mossy.iter())
-            .find(|(a, _)| *a == rock)
-            .map(|(_, b)| *b)
     }
 }

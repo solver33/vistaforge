@@ -560,3 +560,67 @@ fn volcanic_land_is_ash_over_basalt() {
         "{rocks} of {rock_tops}"
     );
 }
+
+/// Where two geological regions meet, their beds interfinger over a wide band instead of
+/// changing along one seam: walking across a border, the share of each region's rock in a tall
+/// cliff changes only a little from one column to the next, while away from the borders a
+/// region shows only its own rock. The same holds down a volcano's flank.
+#[test]
+fn strata_run_on_across_region_borders() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let b = Blocks::new(&catalog, &palette);
+    let s = Surface::new(&b, &settings()).unwrap();
+    let g = &s.geology;
+    let suite_of: std::collections::HashMap<Mat, usize> = geology::SUITES
+        .iter()
+        .enumerate()
+        .flat_map(|(i, su)| su.rocks.iter().map(move |&(k, _)| (k, i)))
+        .map(|(k, i)| (s.kit.get(k), i))
+        .collect();
+    // The share of each suite's rock in a cliff 300 blocks high.
+    let shares = |x: i32, z: i32, volcanic: f32| {
+        let st = g.strata(x, z, volcanic);
+        let mut n = [0f32; geology::SUITES.len()];
+        for y in 0..300 {
+            n[suite_of[&g.rock(&st, y)]] += 1.0 / 300.0;
+        }
+        n
+    };
+    let step = |a: &[f32], b: &[f32]| {
+        a.iter()
+            .zip(b)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max)
+    };
+    let dominant = |n: &[f32]| (0..n.len()).max_by(|&a, &b| n[a].total_cmp(&n[b])).unwrap();
+
+    let (mut borders, mut pure, mut worst) = (0, 0, 0f32);
+    let mut prev = shares(-2500, 40, 0.0);
+    for x in -2499..2500 {
+        let cur = shares(x, 40, 0.0);
+        worst = worst.max(step(&cur, &prev));
+        borders += (dominant(&cur) != dominant(&prev)) as usize;
+        pure += cur.iter().any(|&v| v > 0.999) as usize;
+        prev = cur;
+    }
+    eprintln!("{borders} borders, {pure} pure columns, worst step {worst}");
+    assert!(borders >= 3, "{borders}");
+    assert!(pure > 2500, "{pure}");
+    assert!(worst < 0.15, "{worst}");
+
+    // Down a volcano's flank the volcanic rock gives way bed by bed.
+    let mut prev = shares(300, 300, 0.0);
+    assert_eq!(prev[geology::VOLCANIC], 0.0);
+    for k in 1..=100 {
+        let cur = shares(300, 300, k as f32 / 100.0);
+        assert!(step(&cur, &prev) < 0.15, "{k}");
+        prev = cur;
+    }
+    assert!(prev[geology::VOLCANIC] > 0.999);
+    let half = shares(300, 300, 0.5)[geology::VOLCANIC];
+    assert!((0.3..0.7).contains(&half), "{half}");
+}

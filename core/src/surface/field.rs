@@ -4,7 +4,7 @@
 
 use crate::biome::Biome;
 use crate::column::ColumnInfo;
-use crate::noise::{fbm2, hash2, unit2, value2};
+use crate::noise::{fbm2, hash2, hash64, unit2, value2};
 
 /// Salts that keep the different fields of one seed independent.
 pub(crate) mod salt {
@@ -55,25 +55,54 @@ pub(crate) fn local_biome(seed: u64, x: i32, z: i32, col: &ColumnInfo) -> Biome 
 /// warped Voronoi cells with frayed edges; `salt` picks an independent pattern.
 pub(crate) fn patch(seed: u64, salt: u64, x: i32, z: i32, scale: f64) -> u64 {
     let s = seed ^ salt ^ salt::PATCH;
+    let fray = 1.4 * (unit2(s ^ 0xF1, x as i64, z as i64) - 0.5);
+    let (wx, wz) = warped(s, x, z, scale);
+    let mut best = (f64::MAX, 0u64);
+    for (d, h) in sites(s, wx + fray, wz - fray, scale, 1) {
+        if d < best.0 {
+            best = (d, h);
+        }
+    }
+    hash64(best.1)
+}
+
+/// The patches of [`patch`] around a column (without the frayed edges): each one's id and how
+/// far the column is from its centre, in warped blocks. The nearest is the column's own patch;
+/// how much further the others are says how close the column is to their borders.
+pub(crate) fn patches_near(
+    seed: u64,
+    salt: u64,
+    x: i32,
+    z: i32,
+    scale: f64,
+) -> impl Iterator<Item = (f64, u64)> {
+    let s = seed ^ salt ^ salt::PATCH;
+    let (wx, wz) = warped(s, x, z, scale);
+    sites(s, wx, wz, scale, 2).map(|(d, h)| (d.sqrt(), hash64(h)))
+}
+
+/// A column's position in the warped space the patch centres are scattered in.
+fn warped(s: u64, x: i32, z: i32, scale: f64) -> (f64, f64) {
     let (fx, fz) = (x as f64, z as f64);
     let w = scale * 0.8;
-    let fray = 1.4 * (unit2(s ^ 0xF1, x as i64, z as i64) - 0.5);
-    let wx = fx + scale * 0.5 * value2(s ^ 0x3A1, fx / w, fz / w) + fray;
-    let wz = fz + scale * 0.5 * value2(s ^ 0x3A2, fx / w, fz / w) - fray;
+    (
+        fx + scale * 0.5 * value2(s ^ 0x3A1, fx / w, fz / w),
+        fz + scale * 0.5 * value2(s ^ 0x3A2, fx / w, fz / w),
+    )
+}
+
+/// The patch centres in the cells up to `r` cells from a warped position: squared distance and
+/// raw hash.
+fn sites(s: u64, wx: f64, wz: f64, scale: f64, r: i64) -> impl Iterator<Item = (f64, u64)> {
     let (cx, cz) = ((wx / scale).floor() as i64, (wz / scale).floor() as i64);
-    let mut best = (f64::MAX, 0u64);
-    for gx in cx - 1..=cx + 1 {
-        for gz in cz - 1..=cz + 1 {
+    (cx - r..=cx + r).flat_map(move |gx| {
+        (cz - r..=cz + r).map(move |gz| {
             let h = hash2(s, gx, gz);
             let px = (gx as f64 + (h & 0xFFFF) as f64 / 65536.0) * scale;
             let pz = (gz as f64 + ((h >> 16) & 0xFFFF) as f64 / 65536.0) * scale;
-            let d = (px - wx).powi(2) + (pz - wz).powi(2);
-            if d < best.0 {
-                best = (d, h);
-            }
-        }
-    }
-    crate::noise::hash64(best.1)
+            ((px - wx).powi(2) + (pz - wz).powi(2), h)
+        })
+    })
 }
 
 /// Picks an entry by weight with a uniform `u` in 0..1.
