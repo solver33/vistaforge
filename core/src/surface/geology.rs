@@ -124,7 +124,28 @@ pub(crate) const SUITES: &[Suite] = &[
         boulder: &["tan_sandstone", "faded_tan_sandstone"],
         weight: 2,
     },
+    // Only under volcanic land (see [`VOLCANIC`]), never picked for a region.
+    Suite {
+        name: "volcanic",
+        rocks: &[
+            ("weathered_basalt", 4),
+            ("porous_basalt", 3),
+            ("weathered_andesite", 2),
+            ("dark_tuff", 2),
+            ("porous_andesite", 1),
+            ("tuff", 1),
+        ],
+        band: 2.5,
+        mossy: &[],
+        debris: "dark_gravel",
+        rubble: &["conquest:dark_tuff_rocks", "conquest:andesite_rocks"],
+        boulder: &["weathered_basalt", "porous_basalt"],
+        weight: 0,
+    },
 ];
+
+/// The suite under volcanic land: basalt and andesite flows with tuff between them.
+pub(crate) const VOLCANIC: usize = SUITES.len() - 1;
 
 struct Resolved {
     rocks: Vec<(Mat, u32)>,
@@ -173,6 +194,7 @@ impl Geology {
             weights: SUITES
                 .iter()
                 .enumerate()
+                .filter(|(_, s)| s.weight > 0)
                 .map(|(i, s)| (i, s.weight))
                 .collect(),
         }
@@ -184,6 +206,11 @@ impl Geology {
     }
 
     pub fn strata(&self, x: i32, z: i32) -> Strata {
+        self.strata_of(x, z, self.suite_at(x, z))
+    }
+
+    /// The strata of a column made of a given suite.
+    pub fn strata_of(&self, x: i32, z: i32, suite: usize) -> Strata {
         let (fx, fz) = (x as f64, z as f64);
         let s = self.seed ^ salt::GEOLOGY;
         // Gently tilted, wavy beds.
@@ -191,7 +218,6 @@ impl Geology {
             + 1.5 * fbm2(s ^ 2, fx / 17.0, fz / 17.0, 2)
             + 0.02 * fx
             - 0.013 * fz;
-        let suite = self.suite_at(x, z);
         Strata {
             suite,
             warp,

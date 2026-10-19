@@ -74,7 +74,7 @@ test('presets, sliders and undo', async ({ page }) => {
   expect(problems).toEqual([]);
 });
 
-test('filter the presets, and the sea sliders sit with the water ones', async ({ page }) => {
+test('filter the presets, and every slider sits in its labelled group', async ({ page }) => {
   const problems = await open(page);
   const filter = page.getByTestId('preset-filter');
   await filter.fill('swamp');
@@ -89,6 +89,11 @@ test('filter the presets, and the sea sliders sit with the water ones', async ({
   const water = page.locator('[data-group="Water"]');
   await expect(water.getByTestId('slider-sea')).toHaveValue('0');
   await expect(water.getByTestId('slider-islands')).toHaveValue('0.5');
+  const land = page.locator('[data-group="Land"]');
+  await expect(land.getByTestId('slider-plateaus')).toHaveValue('0');
+  await expect(land.getByTestId('slider-volcanoes')).toHaveValue('0');
+  await expect(land).toContainText('Plateaus');
+  await expect(land).toContainText('Volcanoes');
   await expect(page.locator('[data-group="More"]')).toHaveCount(0);
   expect(problems).toEqual([]);
 });

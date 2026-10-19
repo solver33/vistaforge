@@ -12,7 +12,7 @@ use crate::biome::Biome;
 use crate::column::ColumnInfo;
 use crate::noise::{hash2, hash64};
 use crate::surface::field::{hash_unit, patch, pick, woodland};
-use crate::surface::{Surface, Zone};
+use crate::surface::{land_of, Surface, Zone};
 use crate::trees::{Species, TreeRequest};
 
 /// Side of a candidate cell.
@@ -78,59 +78,59 @@ fn stand(biome: Biome) -> Stand {
         open_size,
         grove_size,
     };
-    match biome.fallback() {
+    match biome {
         Biome::Plains => s(0.014, 0.45, &[(Oak, 8), (Birch, 1), (Bush, 3)], 0.75, 0.5),
         Biome::Meadow => s(0.008, 0.45, &[(Oak, 4), (Birch, 3), (Bush, 3)], 0.65, 0.45),
         Biome::Forest => s(
             0.06,
             0.38,
-            &[(Oak, 10), (Birch, 3), (Bush, 2), (Dead, 1)],
+            &[(Oak, 40), (Birch, 12), (Bush, 8), (Dead, 1)],
             0.6,
             0.55,
         ),
         Biome::BirchForest => s(
             0.06,
             0.4,
-            &[(Birch, 10), (Oak, 2), (Bush, 1), (Dead, 1)],
+            &[(Birch, 40), (Oak, 8), (Bush, 4), (Dead, 1)],
             0.55,
             0.5,
         ),
         Biome::Taiga => s(
             0.08,
             0.42,
-            &[(Spruce, 10), (Pine, 2), (Birch, 2), (Dead, 1)],
+            &[(Spruce, 40), (Pine, 8), (Birch, 8), (Dead, 1)],
             0.55,
             0.55,
         ),
         Biome::PineForest => s(
             0.06,
             0.3,
-            &[(Pine, 10), (Spruce, 2), (Birch, 1), (Dead, 1)],
+            &[(Pine, 40), (Spruce, 8), (Birch, 4), (Dead, 1)],
             0.6,
             0.55,
         ),
         Biome::Swamp => s(
             0.1,
             0.38,
-            &[(Willow, 8), (Oak, 3), (Dead, 3), (Bush, 2)],
+            &[(Willow, 16), (Oak, 6), (Bush, 4), (Dead, 1)],
             0.55,
             0.5,
         ),
         Biome::Marsh => s(
             0.01,
             0.2,
-            &[(Willow, 3), (Bush, 4), (Dead, 2), (Birch, 1)],
+            &[(Willow, 6), (Bush, 8), (Birch, 2), (Dead, 1)],
             0.45,
             0.4,
         ),
         Biome::Highlands => s(
             0.005,
             0.35,
-            &[(Birch, 3), (Pine, 3), (Bush, 4), (Dead, 1)],
+            &[(Birch, 12), (Pine, 12), (Bush, 16), (Dead, 1)],
             0.45,
             0.4,
         ),
-        Biome::Mountains => s(0.0, 0.4, &[(Spruce, 6), (Pine, 4), (Dead, 1)], 0.45, 0.45),
+        Biome::Mountains => s(0.0, 0.4, &[(Spruce, 24), (Pine, 16), (Dead, 1)], 0.45, 0.45),
         Biome::AlpineMeadow => s(0.004, 0.25, &[(Spruce, 5), (Bush, 3), (Pine, 2)], 0.4, 0.4),
         Biome::SnowyPeaks => s(0.0, 0.0, &[(Spruce, 1)], 0.3, 0.3),
         Biome::Beach => s(0.004, 0.0, &[(Pine, 3), (Bush, 2)], 0.45, 0.4),
@@ -148,10 +148,43 @@ fn stand(biome: Biome) -> Stand {
             0.6,
             0.5,
         ),
-        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
+        // Jungle trees under a closed canopy, palms in the gaps.
+        Biome::Tropical => s(
+            0.1,
+            0.45,
+            &[(Jungle, 6), (Palm, 3), (Bush, 4), (Oak, 1)],
+            0.65,
+            0.6,
+        ),
+        Biome::SnowyTaiga => s(
+            0.08,
+            0.42,
+            &[(SnowySpruce, 40), (Spruce, 4), (Pine, 4), (Dead, 1)],
+            0.55,
+            0.55,
+        ),
+        // Treeless: a few low shrubs.
+        Biome::Tundra => s(0.003, 0.0, &[(Bush, 1)], 0.25, 0.25),
+        Biome::Volcanic => s(0.0, 0.0, &[(Bush, 1)], 0.25, 0.25),
     }
+}
+
+/// The beaches and banks of tropical land grow palms rather than willows and pines.
+fn tropical_shore(biome: Biome) -> Option<Stand> {
+    use Species::*;
+    let open = match biome {
+        Biome::Beach => 0.02,
+        Biome::River => 0.04,
+        Biome::Lake => 0.03,
+        _ => return None,
+    };
+    Some(Stand {
+        open,
+        grove: 0.0,
+        species: &[(Palm, 4), (Jungle, 1), (Bush, 2)],
+        open_size: 0.6,
+        grove_size: 0.5,
+    })
 }
 
 pub(crate) struct Forest {
@@ -194,7 +227,10 @@ impl Forest {
             return None;
         }
         let (biome, zone) = surface.biome_zone(c.x, c.z, &col);
-        let st = stand(biome);
+        let st = match tropical_shore(biome) {
+            Some(st) if land_of(&col) == Biome::Tropical => st,
+            _ => stand(biome),
+        };
         let wood = woodland(self.seed, c.x, c.z, biome);
         let mut density = st.open + (st.grove - st.open) * wood;
         // Willows and the odd dead tree stand in shallow swamp water; nothing else grows wet.
@@ -224,7 +260,10 @@ impl Forest {
             species = Species::Willow;
         }
         // Broadleaf trees don't take steep ground.
-        let conifer = matches!(species, Species::Spruce | Species::Pine);
+        let conifer = matches!(
+            species,
+            Species::Spruce | Species::Pine | Species::SnowySpruce
+        );
         if !conifer && col.slope > 0.9 {
             return None;
         }

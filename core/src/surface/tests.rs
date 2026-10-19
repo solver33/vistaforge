@@ -21,19 +21,35 @@ pub(crate) fn catalog() -> Option<Catalog> {
 /// Side of a biome region in the synthetic terrain.
 pub(crate) const REGION: i32 = 96;
 pub(crate) const SEA: i32 = 63;
+/// Rows of regions: five regions across, enough rows for every biome.
+pub(crate) const ROWS: i32 = 4;
 
 /// The biome of a region of the synthetic terrain: every biome, five regions across.
 pub(crate) fn region_biome(rx: i32, rz: i32) -> Biome {
     let n = Biome::ALL.len() as i32;
-    Biome::ALL[(rx.rem_euclid(5) + rz.rem_euclid(3) * 5).rem_euclid(n) as usize]
+    Biome::ALL[(rx.rem_euclid(5) + rz.rem_euclid(ROWS) * 5).rem_euclid(n) as usize]
 }
 
 fn biome_height(b: Biome, seed: u64, x: f64, z: f64) -> f64 {
     let n = |s: u64, scale: f64, oct: u32| fbm2(seed ^ s, x / scale, z / scale, oct);
-    match b.fallback() {
+    match b {
         Biome::Plains | Biome::Meadow => 66.5 + 3.0 * n(1, 60.0, 3) + 0.8 * n(2, 12.0, 2),
-        Biome::Forest | Biome::BirchForest | Biome::Taiga => {
+        Biome::Forest | Biome::BirchForest | Biome::Taiga | Biome::SnowyTaiga => {
             68.0 + 5.0 * n(1, 70.0, 3) + 1.0 * n(2, 15.0, 2)
+        }
+        Biome::Tropical => 67.0 + 4.0 * n(1, 60.0, 3) + 1.0 * n(2, 14.0, 2),
+        // Flat, with ponds.
+        Biome::Tundra => 64.0 + 3.0 * n(10, 25.0, 3) + 0.5 * n(2, 9.0, 2),
+        // A cone with a crater.
+        Biome::Volcanic => {
+            let (lx, lz) = (
+                x.rem_euclid(REGION as f64) - 48.0,
+                z.rem_euclid(REGION as f64) - 48.0,
+            );
+            let d = (lx * lx + lz * lz).sqrt() / 44.0;
+            let cone = (1.0 - d).max(0.0).powf(1.3);
+            let crater = 12.0 * (1.0 - d / 0.18).max(0.0);
+            70.0 + 42.0 * cone - crater + 2.0 * n(11, 20.0, 3)
         }
         Biome::PineForest => 70.0 + 6.0 * n(1, 50.0, 3) + 1.2 * n(2, 12.0, 2),
         Biome::Swamp => 63.6 + 1.1 * n(3, 22.0, 3),
@@ -60,17 +76,15 @@ fn biome_height(b: Biome, seed: u64, x: f64, z: f64) -> f64 {
             let d = (lx * lx + lz * lz).sqrt() / 36.0;
             66.0 + 1.5 * n(1, 30.0, 2) - 9.0 * (1.0 - d.min(1.0)).powf(0.7)
         }
-        Biome::Tropical | Biome::SnowyTaiga | Biome::Tundra | Biome::Volcanic => {
-            unreachable!("fallback() returns one of the original biomes")
-        }
     }
 }
 
 fn moisture_of(b: Biome) -> f32 {
     match b {
         Biome::Swamp | Biome::Marsh => 0.85,
-        Biome::Forest | Biome::Taiga | Biome::River | Biome::Lake => 0.6,
-        Biome::PineForest | Biome::Beach | Biome::Mountains => 0.35,
+        Biome::Tropical => 0.7,
+        Biome::Forest | Biome::Taiga | Biome::SnowyTaiga | Biome::River | Biome::Lake => 0.6,
+        Biome::PineForest | Biome::Beach | Biome::Mountains | Biome::Volcanic => 0.35,
         _ => 0.5,
     }
 }
@@ -133,7 +147,10 @@ pub(crate) fn synth_column(seed: u64, x: i32, z: i32) -> ColumnInfo {
     };
     let moisture: f32 = w.iter().map(|e| e.1 as f32 * moisture_of(e.0)).sum::<f32>()
         + 0.15 * fbm2(seed ^ 0x40, fx / 30.0, fz / 30.0, 2) as f32;
-    let mountain = matches!(biome, Biome::Mountains | Biome::SnowyPeaks);
+    let mountain = matches!(
+        biome,
+        Biome::Mountains | Biome::SnowyPeaks | Biome::Volcanic
+    );
     ColumnInfo {
         height: h as f32,
         water_level: wet.then_some(SEA),
@@ -194,7 +211,8 @@ fn columns_are_solid_up_to_the_ground_and_water_up_to_its_level() {
     let b = Blocks::new(&catalog, &palette);
     let s = Surface::new(&b, &settings()).unwrap();
     let water = b.id("minecraft:water", &[("level", "0")]).unwrap();
-    let rect = Rect::new(0, 0, REGION * 5, REGION * 3);
+    let ice = b.default_id("minecraft:ice").unwrap();
+    let rect = Rect::new(0, 0, REGION * 5, REGION * ROWS);
     let grid = synth_grid(11, rect);
     let mut area = Area::new(rect, &palette);
     let mut wet = 0;
@@ -209,14 +227,17 @@ fn columns_are_solid_up_to_the_ground_and_water_up_to_its_level() {
             assert_ne!(at(yy), water, "water in the ground at {x} {yy} {z}");
         }
         if layers == 0 {
-            assert!(at(y) == AIR || at(y) == water, "{x} {y} {z}");
+            assert!(
+                at(y) == AIR || at(y) == water || at(y) == ice,
+                "{x} {y} {z}"
+            );
         }
         if let Some(w) = col.water_level {
             wet += 1;
             // The top water cell is water, or a waterlogged layer of ground just under the
             // surface.
             if y < w {
-                assert_eq!(at(w), water, "{x} {w} {z}");
+                assert!(at(w) == water || at(w) == ice, "{x} {w} {z}");
             }
             assert_eq!(at(w + 1), AIR);
         } else {
@@ -235,7 +256,7 @@ fn ground_varies_within_every_biome() {
     let palette = Palette::new();
     let b = Blocks::new(&catalog, &palette);
     let s = Surface::new(&b, &settings()).unwrap();
-    for rz in 0..3 {
+    for rz in 0..ROWS {
         for rx in 0..5 {
             let biome = region_biome(rx, rz);
             let rect = Rect::new(
@@ -279,6 +300,18 @@ fn water_gets_a_light_biome() {
     // Above the water, trees and reeds keep the land's colours.
     assert_eq!(s.minecraft_biome_at(&lake, 60), "minecraft:warm_ocean");
     assert_eq!(s.minecraft_biome_at(&lake, 64), "minecraft:swamp");
+    let sea = ColumnInfo {
+        biome: Biome::Lake,
+        biome2: Biome::Tropical,
+        water: WaterKind::Sea,
+        ..lake
+    };
+    assert_eq!(s.minecraft_biome_at(&sea, 64), "minecraft:jungle");
+    let pond = ColumnInfo {
+        biome2: Biome::Forest,
+        ..sea
+    };
+    assert_eq!(s.minecraft_biome_at(&pond, 64), "minecraft:plains");
     let land = ColumnInfo::dry(70.0, Biome::Forest);
     assert_eq!(s.minecraft_biome(&land), "minecraft:forest");
     // Water in the preview is clearly blue, not black.
@@ -346,5 +379,184 @@ fn river_banks_blend_into_the_land() {
     assert!(
         stones * 10 < total,
         "{stones} of {total} bank columns are stones"
+    );
+}
+
+fn region_of(b: Biome) -> (i32, i32) {
+    (0..5 * ROWS)
+        .map(|i| (i % 5, i / 5))
+        .find(|&(x, z)| region_biome(x, z) == b)
+        .unwrap()
+}
+
+/// Ponds in the tundra freeze over; a river through snowy taiga freezes from the banks in and
+/// runs open in the middle.
+#[test]
+fn cold_water_freezes() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let b = Blocks::new(&catalog, &palette);
+    let s = Surface::new(&b, &settings()).unwrap();
+    let water = b.id("minecraft:water", &[("level", "0")]).unwrap();
+    let ice = b.default_id("minecraft:ice").unwrap();
+
+    let (rx, rz) = region_of(Biome::Tundra);
+    let rect = Rect::new(
+        rx * REGION + 20,
+        rz * REGION + 20,
+        rx * REGION + 76,
+        rz * REGION + 76,
+    );
+    let grid = synth_grid(11, rect.expand(NEAR));
+    let mut area = Area::new(rect, &palette);
+    let (mut ponds, mut frozen) = (0, 0);
+    for (x, z) in rect.columns() {
+        s.fill(x, z, &grid, &mut area);
+        let col = grid.get(x, z);
+        if let (Some(w), Biome::Tundra) = (col.water_level, col.biome) {
+            if col.ground().0 < w {
+                ponds += 1;
+                frozen += (area.get(x, w, z) == ice) as usize;
+            }
+        }
+    }
+    assert!(ponds > 50 && frozen == ponds, "{frozen} of {ponds}");
+
+    // A river twelve blocks wide and three deep.
+    let river = |_: i32, z: i32| {
+        if (10..=21).contains(&z) {
+            ColumnInfo {
+                water_level: Some(63),
+                water: WaterKind::River,
+                biome2: Biome::SnowyTaiga,
+                ..ColumnInfo::dry(60.0, Biome::River)
+            }
+        } else {
+            ColumnInfo::dry(65.0, Biome::SnowyTaiga)
+        }
+    };
+    let rect = Rect::new(0, 0, 64, 32);
+    let grid = ColumnGrid::build(rect.expand(NEAR), river);
+    let mut area = Area::new(rect, &palette);
+    let (mut edge, mut middle) = (0, 0);
+    for (x, z) in rect.columns() {
+        s.fill(x, z, &grid, &mut area);
+        let top = area.get(x, 63, z);
+        match z {
+            10 | 21 => edge += (top == ice) as usize,
+            15 | 16 => {
+                assert_eq!(top, water, "{x} {z}");
+                middle += 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(edge > 2 * 64 * 9 / 10, "{edge}");
+    assert!(middle > 0);
+    // Frozen land keeps its own biome, also in the air over its rivers and lakes; its water
+    // keeps the light ocean colour.
+    let river = grid.get(5, 15);
+    assert_eq!(s.minecraft_biome_at(river, 60), "minecraft:lukewarm_ocean");
+    assert_eq!(s.minecraft_biome_at(river, 64), "minecraft:snowy_taiga");
+    let land = ColumnInfo::dry(65.0, Biome::SnowyTaiga);
+    assert_eq!(s.minecraft_biome(&land), "minecraft:snowy_taiga");
+    assert_eq!(
+        s.minecraft_biome(&ColumnInfo::dry(65.0, Biome::Tundra)),
+        "minecraft:snowy_plains"
+    );
+}
+
+/// Snow lies over most of the tundra and the snowy taiga.
+#[test]
+fn cold_land_lies_under_snow() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let b = Blocks::new(&catalog, &palette);
+    let s = Surface::new(&b, &settings()).unwrap();
+    for biome in [Biome::Tundra, Biome::SnowyTaiga] {
+        let (rx, rz) = region_of(biome);
+        let rect = Rect::new(
+            rx * REGION + 8,
+            rz * REGION + 8,
+            rx * REGION + 88,
+            rz * REGION + 88,
+        );
+        let grid = synth_grid(11, rect.expand(NEAR));
+        let (mut dry, mut snow) = (0, 0);
+        for (x, z) in rect.columns() {
+            let col = grid.get(x, z);
+            if col.is_wet() || col.biome != biome {
+                continue;
+            }
+            dry += 1;
+            let top = s.top_at(x, z, &grid).unwrap();
+            snow += (s.kit.mat(top.mat).kind == Kind::Snow) as usize;
+        }
+        eprintln!("{biome:?}: {snow} of {dry} dry columns under snow");
+        assert!(
+            dry > 1000 && snow * 10 > dry * 6,
+            "{biome:?}: {snow} of {dry}"
+        );
+    }
+}
+
+/// Volcanic land is ash, burnt soil and cinders over basalt and tuff, with no grass, and its
+/// cliffs show the volcanic rocks.
+#[test]
+fn volcanic_land_is_ash_over_basalt() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: no catalog (set VISTAFORGE_CATALOG)");
+        return;
+    };
+    let palette = Palette::new();
+    let b = Blocks::new(&catalog, &palette);
+    let s = Surface::new(&b, &settings()).unwrap();
+    let (rx, rz) = region_of(Biome::Volcanic);
+    let rect = Rect::new(
+        rx * REGION + 16,
+        rz * REGION + 16,
+        rx * REGION + 80,
+        rz * REGION + 80,
+    );
+    let grid = synth_grid(11, rect.expand(NEAR));
+    let mut area = Area::new(rect, &palette);
+    let volcanic: Vec<Mat> = geology::SUITES[geology::VOLCANIC]
+        .rocks
+        .iter()
+        .map(|&(k, _)| s.kit.get(k))
+        .collect();
+    let (mut cols, mut rock_tops, mut rocks) = (0, 0, 0);
+    for (x, z) in rect.columns() {
+        s.fill(x, z, &grid, &mut area);
+        let col = grid.get(x, z);
+        if col.biome != Biome::Volcanic || col.blend > 0.0 || col.is_wet() {
+            continue;
+        }
+        cols += 1;
+        let top = s.top_at(x, z, &grid).unwrap();
+        let kind = s.kit.mat(top.mat).kind;
+        assert!(
+            !matches!(kind, Kind::Grass | Kind::Floor | Kind::Moss),
+            "{kind:?} at {x} {z}"
+        );
+        if top.zone == Zone::Rock {
+            rock_tops += 1;
+            assert!(volcanic.contains(&top.mat), "rock at {x} {z}");
+            // The cliff below shows the volcanic strata.
+            let (y, _) = col.ground();
+            let below = s.kit.of_block(area.get(x, y - 2, z));
+            rocks += below.is_some_and(|(m, _)| volcanic.contains(&m)) as usize;
+        }
+    }
+    eprintln!("{cols} volcanic columns, {rock_tops} bare rock, {rocks} on volcanic strata");
+    assert!(
+        cols > 1500 && rock_tops > 20 && rocks == rock_tops,
+        "{rocks} of {rock_tops}"
     );
 }

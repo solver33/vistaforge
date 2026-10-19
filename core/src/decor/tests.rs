@@ -5,7 +5,7 @@ use super::*;
 use crate::catalog::Catalog;
 use crate::column::ColumnGrid;
 use crate::sink::Palette;
-use crate::surface::tests::{catalog, region_biome, synth_column, REGION};
+use crate::surface::tests::{catalog, region_biome, synth_column, REGION, ROWS};
 use crate::trees::Trees;
 use crate::world::Area;
 
@@ -101,7 +101,7 @@ fn pieces_agree_in_every_biome() {
     };
     let palette = Palette::new();
     let w = World::new(&catalog, &palette);
-    for rz in 0..3 {
+    for rz in 0..ROWS {
         for rx in 0..5 {
             let (x0, z0) = (rx * REGION + 10, rz * REGION + 10);
             let a = Rect::new(x0, z0, x0 + 64, z0 + 64);
@@ -130,7 +130,7 @@ fn every_biome_is_detailed() {
     };
     let palette = Palette::new();
     let w = World::new(&catalog, &palette);
-    for rz in 0..3 {
+    for rz in 0..ROWS {
         for rx in 0..5 {
             let biome = region_biome(rx, rz);
             let (x0, z0) = (rx * REGION + 16, rz * REGION + 16);
@@ -175,7 +175,12 @@ fn every_biome_is_detailed() {
                 continue; // mostly water
             }
             match biome {
-                Biome::SnowyPeaks => assert!(changed > 0, "{biome:?}"),
+                Biome::SnowyPeaks | Biome::Volcanic => assert!(changed > 0, "{biome:?}"),
+                // Mostly under snow: plants only between the drifts.
+                Biome::Tundra | Biome::SnowyTaiga => {
+                    assert!(per_column > 0.04, "{biome:?}: {per_column}");
+                    assert!(names.len() >= 5, "{biome:?}: {names:?}");
+                }
                 Biome::Beach => assert!(per_column > 0.05, "{biome:?}: {per_column}"),
                 Biome::Mountains => assert!(per_column > 0.15, "{biome:?}: {per_column}"),
                 _ => {
@@ -206,7 +211,7 @@ fn trees_follow_the_biome() {
         w.decor.plan_trees(rect, &column)
     };
     let find = |b: Biome| {
-        (0..15)
+        (0..5 * ROWS)
             .map(|i| (i % 5, i / 5))
             .find(|&(x, z)| region_biome(x, z) == b)
             .unwrap()
@@ -222,6 +227,36 @@ fn trees_follow_the_biome() {
         plains.len()
     );
     assert!(peaks.is_empty(), "{}", peaks.len());
+    let volcanic = count(find(Biome::Volcanic).0, find(Biome::Volcanic).1);
+    assert!(volcanic.is_empty(), "{}", volcanic.len());
+    let tundra = count(find(Biome::Tundra).0, find(Biome::Tundra).1);
+    assert!(
+        tundra.len() * 10 < forest.len()
+            && tundra
+                .iter()
+                .all(|t| t.species == crate::trees::Species::Bush),
+        "{}",
+        tundra.len()
+    );
+    let snowy = count(find(Biome::SnowyTaiga).0, find(Biome::SnowyTaiga).1);
+    assert!(
+        snowy
+            .iter()
+            .filter(|t| t.species == crate::trees::Species::SnowySpruce)
+            .count()
+            > snowy.len() / 2
+    );
+    let tropical = count(find(Biome::Tropical).0, find(Biome::Tropical).1);
+    assert!(
+        tropical
+            .iter()
+            .filter(|t| matches!(
+                t.species,
+                crate::trees::Species::Jungle | crate::trees::Species::Palm
+            ))
+            .count()
+            > tropical.len() / 2
+    );
     assert!(
         taiga
             .iter()
@@ -247,7 +282,7 @@ fn tall_plants_are_built_as_by_hand() {
     assert_eq!(class("conquest:cattail_reeds"), "PlantsTall4");
     assert_eq!(class("conquest:rushes"), "PlantsDenseStackableHeight2");
     let (mut tall, mut taller, mut stacked) = (0, 0, 0);
-    for rz in 0..3 {
+    for rz in 0..ROWS {
         for rx in 0..5 {
             let rect = Rect::new(
                 rx * REGION + 16,
