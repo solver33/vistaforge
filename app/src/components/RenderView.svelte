@@ -127,7 +127,7 @@
     <div class="bar">
       {#if render.stale && !render.building}
         <span class="changed">The map has changed since this render.</span>
-        <button class="btn small primary" onclick={() => render.build()}>Render again</button>
+        <button class="btn small primary" onclick={() => render.build()} data-testid="render-again">Render again</button>
       {/if}
       {#if statusText}<span class="status" data-testid="render-status">{statusText}</span>{/if}
       {#if render.scene}
@@ -453,6 +453,7 @@
     outline: none;
   }
 
+  /* Along the bottom, left of the settings panel when it is open. */
   .bar {
     position: absolute;
     bottom: 10px;
@@ -500,6 +501,11 @@
     right: 260px;
   }
 
+  .shifted .bar {
+    right: 270px;
+    max-width: calc(100% - 280px);
+  }
+
   .card {
     max-width: 380px;
     padding: 16px 18px;
@@ -522,7 +528,7 @@
     position: absolute;
     top: 10px;
     right: 10px;
-    bottom: 48px;
+    bottom: 10px;
     width: 250px;
     overflow-y: auto;
     border-radius: var(--radius);

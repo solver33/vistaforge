@@ -83,7 +83,11 @@ test('render mode says when the map changed', async ({ page }) => {
   await expect(page.getByTestId('render-status')).toContainText(/Rendering|Finished/, { timeout: 30_000 });
   await page.locator('[data-preset="mountains"]').click();
   await expect(page.getByText('The map has changed since this render.')).toBeVisible();
-  await page.getByTestId('render-view').getByRole('button', { name: 'Render again' }).first().click();
+  // The prompt sits clear of the settings panel.
+  const button = (await page.getByTestId('render-again').boundingBox())!;
+  const panel = (await page.getByTestId('render-panel').boundingBox())!;
+  expect(button.x + button.width).toBeLessThanOrEqual(panel.x);
+  await page.getByTestId('render-again').click();
   await expect.poll(async () => (await calls(page)).renderScene).toBe(2);
   await expect(page.getByText('The map has changed since this render.')).toHaveCount(0);
   expect(problems).toEqual([]);
