@@ -186,6 +186,7 @@ class AppState {
   private previewQueued = false;
   private previewTimer: ReturnType<typeof setTimeout> | undefined;
   private commitTimer: ReturnType<typeof setTimeout> | undefined;
+  private holding = false;
   private configTimer: ReturnType<typeof setTimeout> | undefined;
   private toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -270,7 +271,21 @@ class AppState {
   /** Records an undo step once the settings stop changing for a moment. */
   commitSoon(): void {
     clearTimeout(this.commitTimer);
+    // A pause in the middle of a drag is not a step: the drag ends with one.
+    if (this.holding) return;
     this.commitTimer = setTimeout(() => this.commit(), 400);
+  }
+
+  /** A mouse button is down: what it drags becomes one undo step when it comes up. */
+  holdCommits(): void {
+    this.commit();
+    this.holding = true;
+  }
+
+  releaseCommits(): void {
+    if (!this.holding) return;
+    this.holding = false;
+    this.commit();
   }
 
   undo(): void {

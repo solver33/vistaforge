@@ -136,14 +136,21 @@ test('place, edit, move and delete a hill on the map', async ({ page }) => {
   await typeField(page, 'height', 40);
   await expect(edits).toContainText('+40 high');
 
-  // Drag it 100 blocks east.
+  // Drag it 100 blocks east, pausing half way: the whole drag is one undo step.
+  const half = await mapPoint(page, 350, 400);
   const c = await mapPoint(page, 400, 400);
   await page.mouse.move(a.x, a.y);
   await page.mouse.down();
-  await page.mouse.move(c.x, c.y, { steps: 5 });
+  await page.mouse.move(half.x, half.y, { steps: 3 });
+  await page.waitForTimeout(700);
+  await page.mouse.move(c.x, c.y, { steps: 3 });
   await page.mouse.up();
   const x = await field(page, 'x');
   expect(Math.abs(x - 400)).toBeLessThan(4);
+  await page.getByTestId('undo').click();
+  expect(Math.abs((await field(page, 'x')) - 300)).toBeLessThan(4);
+  await page.getByTestId('redo').click();
+  expect(Math.abs((await field(page, 'x')) - 400)).toBeLessThan(4);
 
   await page.getByTestId('view-map').locator('canvas').focus();
   await page.keyboard.press('Delete');
