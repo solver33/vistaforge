@@ -2,6 +2,9 @@
 // on the UI in a browser. Vite forwards /api to it; start both with `npm run dev:real`.
 
 import { decodePreview } from '../decode';
+import type { SceneRequest } from '../render/backend';
+import { decodeScene, type Scene } from '../render/scene';
+import { decodeWorldMap } from '../worldmap';
 import type {
   AppConfig,
   AppInfo,
@@ -10,6 +13,8 @@ import type {
   Instance,
   PreviewData,
   Progress,
+  WorldInfo,
+  WorldMapData,
   WorldSettings,
 } from '../types';
 import type { Backend } from './index';
@@ -116,5 +121,29 @@ export class HttpBackend implements Backend {
 
   async pickSettingsToSave(suggestedName: string): Promise<string | null> {
     return prompt('Save settings as', `${suggestedName}.json`);
+  }
+
+  async pickWorld(savesDir: string | null): Promise<string | null> {
+    return prompt('World folder (the one with level.dat)', savesDir ?? '');
+  }
+
+  openWorld(path: string, dimension: string | null): Promise<WorldInfo> {
+    return call('open_world', { path, dimension });
+  }
+
+  async closeWorld(): Promise<void> {
+    await call('close_world');
+  }
+
+  async worldMap(): Promise<WorldMapData> {
+    return decodeWorldMap(await (await post('world_map')).arrayBuffer());
+  }
+
+  async worldPreview(x0: number, z0: number, size: number, res: number): Promise<PreviewData> {
+    return decodePreview(await (await post('world_preview', { x0, z0, size, res })).arrayBuffer());
+  }
+
+  async worldScene(request: SceneRequest): Promise<Scene> {
+    return decodeScene(await (await post('world_scene', { request })).arrayBuffer());
   }
 }

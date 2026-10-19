@@ -1,7 +1,8 @@
 # Vistaforge app
 
 The Windows desktop app: pick a preset, shape the map, see it in 3D, and write the world into
-the game's saves folder. Tauri 2 shell, Svelte 5 + TypeScript UI, three.js for the 3D view.
+the game's saves folder. It also opens worlds already played (read only): a map of every saved
+chunk, and a square of it in the 3D view and render mode. Tauri 2 shell, Svelte 5 + TypeScript UI, three.js for the 3D view.
 
 ```
 app/
@@ -10,8 +11,10 @@ app/
     lib/backend/       how the UI reaches the core: tauri.ts (the app), http.ts (dev server), mock.ts
     lib/scene3d.ts     3D preview
     lib/decode.ts      reads the packed preview (layout in bridge/src/encode.rs)
+    lib/world.svelte.ts  an opened world: its map, the chosen square, render mode's scenes of it
     components/        sidebar panels, 3D view, map editor, export dialog
   bridge/              Rust: everything the app asks of the core, with no Tauri dependency
+    src/world/         reads Minecraft 1.18+ worlds: regions, chunks, the map, render scenes
     src/bin/devserver.rs   the same commands over HTTP, for working on the UI in a browser
   src-tauri/           Rust: the Tauri window, a thin layer over the bridge
   tests/               browser tests (Playwright) against the mock backend

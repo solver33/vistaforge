@@ -91,6 +91,70 @@ fn save_image(request: Request<'_>) -> Result<(), String> {
     std::fs::write(&path, bytes).map_err(|e| format!("saving {}: {e}", path.display()))
 }
 
+/// Opens a Minecraft world folder to look at (never written to).
+#[tauri::command(rename_all = "snake_case")]
+async fn open_world(
+    bridge: Shared<'_>,
+    path: PathBuf,
+    dimension: Option<String>,
+) -> Result<vistaforge_bridge::world::WorldInfo, String> {
+    let bridge = bridge.inner().clone();
+    blocking(move || bridge.open_world(&path, dimension.as_deref())).await
+}
+
+#[tauri::command]
+fn close_world(bridge: Shared<'_>) {
+    bridge.close_world();
+}
+
+/// The map of every saved chunk of the open world; `on_progress` gets (regions done, in all).
+#[tauri::command(rename_all = "snake_case")]
+async fn world_map(
+    bridge: Shared<'_>,
+    on_progress: Channel<[usize; 2]>,
+) -> Result<Response, String> {
+    let bridge = bridge.inner().clone();
+    blocking(move || {
+        bridge.world_map(&|done, total| {
+            on_progress.send([done, total]).ok();
+        })
+    })
+    .await
+    .map(Response::new)
+}
+
+/// A square of the open world, packed like `preview`.
+#[tauri::command(rename_all = "snake_case")]
+async fn world_preview(
+    bridge: Shared<'_>,
+    x0: i32,
+    z0: i32,
+    size: u32,
+    res: u32,
+) -> Result<Response, String> {
+    let bridge = bridge.inner().clone();
+    blocking(move || bridge.world_preview(x0, z0, size, res))
+        .await
+        .map(Response::new)
+}
+
+/// Render mode's scene of a square of the open world, in world coordinates.
+#[tauri::command(rename_all = "snake_case")]
+async fn world_scene(
+    bridge: Shared<'_>,
+    request: render::SceneRequest,
+    on_progress: Channel<[usize; 2]>,
+) -> Result<Response, String> {
+    let bridge = bridge.inner().clone();
+    blocking(move || {
+        bridge.world_scene(&request, &|done, total| {
+            on_progress.send([done, total]).ok();
+        })
+    })
+    .await
+    .map(Response::new)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn world_exists(saves_dir: PathBuf, name: String) -> bool {
     paths::world_exists(&saves_dir, &name)
@@ -161,6 +225,11 @@ fn main() {
             preview,
             render_scene,
             save_image,
+            open_world,
+            close_world,
+            world_map,
+            world_preview,
+            world_scene,
             world_exists,
             export_world,
             cancel_export,

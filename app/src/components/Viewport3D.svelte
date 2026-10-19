@@ -3,6 +3,7 @@
   import { app } from '../lib/app.svelte';
   import { render } from '../lib/render/state.svelte';
   import { PreviewScene } from '../lib/scene3d';
+  import { world } from '../lib/world.svelte';
   import RenderView from './RenderView.svelte';
 
   let canvas: HTMLCanvasElement;
@@ -82,6 +83,14 @@
         <p>Choose the block catalog from your Conquest Reforged game to see the map.</p>
         <button class="btn primary" onclick={() => app.pickCatalog()}>Choose catalog…</button>
       </div>
+    </div>
+  {:else if world.info && !app.preview}
+    <div class="overlay">
+      {#if world.areaError}
+        <div class="card error-text" data-testid="world-area-error">{world.areaError}</div>
+      {:else}
+        <div class="card"><span class="spinner"></span> Reading this part of the world…</div>
+      {/if}
     </div>
   {:else if app.previewError && !app.preview}
     <div class="overlay"><div class="card error-text">{app.previewError}</div></div>

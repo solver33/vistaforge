@@ -3,6 +3,9 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { decodePreview } from '../decode';
+import type { SceneRequest } from '../render/backend';
+import { decodeScene, type Scene } from '../render/scene';
+import { decodeWorldMap } from '../worldmap';
 import type {
   AppConfig,
   AppInfo,
@@ -11,6 +14,8 @@ import type {
   Instance,
   PreviewData,
   Progress,
+  WorldInfo,
+  WorldMapData,
   WorldSettings,
 } from '../types';
 import type { Backend } from './index';
@@ -109,5 +114,38 @@ export class TauriBackend implements Backend {
 
   async pickSettingsToSave(suggestedName: string): Promise<string | null> {
     return save({ title: 'Save map settings', defaultPath: `${suggestedName}.json`, filters: SETTINGS_FILTER });
+  }
+
+  async pickWorld(savesDir: string | null): Promise<string | null> {
+    return open({
+      title: 'Open a world: choose its folder in saves (the one with level.dat)',
+      multiple: false,
+      directory: true,
+      defaultPath: savesDir ?? undefined,
+    });
+  }
+
+  openWorld(path: string, dimension: string | null): Promise<WorldInfo> {
+    return call('open_world', { path, dimension });
+  }
+
+  closeWorld(): Promise<void> {
+    return call('close_world');
+  }
+
+  async worldMap(onProgress: (done: number, total: number) => void): Promise<WorldMapData> {
+    const channel = new Channel<[number, number]>();
+    channel.onmessage = ([done, total]) => onProgress(done, total);
+    return decodeWorldMap(await call<ArrayBuffer>('world_map', { on_progress: channel }));
+  }
+
+  async worldPreview(x0: number, z0: number, size: number, res: number): Promise<PreviewData> {
+    return decodePreview(await call<ArrayBuffer>('world_preview', { x0, z0, size, res }));
+  }
+
+  async worldScene(request: SceneRequest, onProgress: (done: number, total: number) => void): Promise<Scene> {
+    const channel = new Channel<[number, number]>();
+    channel.onmessage = ([done, total]) => onProgress(done, total);
+    return decodeScene(await call<ArrayBuffer>('world_scene', { request, on_progress: channel }));
   }
 }

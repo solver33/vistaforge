@@ -1,17 +1,20 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import BiomePanel from './components/BiomePanel.svelte';
   import EditsPanel from './components/EditsPanel.svelte';
   import ExportDialog from './components/ExportDialog.svelte';
   import GamePanel from './components/GamePanel.svelte';
   import MapEditor from './components/MapEditor.svelte';
+  import OpenWorldPanel from './components/OpenWorldPanel.svelte';
   import PresetPanel from './components/PresetPanel.svelte';
   import ShapePanel from './components/ShapePanel.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import TopBar from './components/TopBar.svelte';
   import Viewport3D from './components/Viewport3D.svelte';
+  import WorldMap from './components/WorldMap.svelte';
   import WorldPanel from './components/WorldPanel.svelte';
   import { app } from './lib/app.svelte';
+  import { world } from './lib/world.svelte';
 
   onMount(() => {
     void app.start();
@@ -29,6 +32,24 @@
     if (app.ready) app.commitSoon();
   });
 
+  // An opened world: read the chosen square for the 3D view once it stops moving.
+  $effect(() => {
+    void world.key;
+    void app.ui.res;
+    untrack(() => world.scheduleArea());
+  });
+
+  // Loading a catalog closes the world in the bridge: open it again with the new one.
+  $effect(() => {
+    const catalog = app.catalog;
+    const info = world.info;
+    if (!info || catalog === world.openedWith) return;
+    untrack(() => {
+      if (!catalog) world.close();
+      else void world.open(info.path, info.dimension);
+    });
+  });
+
   // Remember folders, the map and the view for next time.
   $effect(() => {
     void app.configJson;
@@ -40,6 +61,8 @@
     const t = e.target as HTMLElement | null;
     const inText = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && (t as HTMLInputElement).type !== 'range';
     const key = e.key.toLowerCase();
+    // An opened world has no map settings to undo, save or open.
+    if (world.info) return;
     if (key === 'z' && !inText) {
       e.preventDefault();
       if (e.shiftKey) app.redo();
@@ -80,15 +103,21 @@
     <div class="body">
       <aside class="sidebar">
         <GamePanel />
-        <PresetPanel />
-        <WorldPanel />
-        <BiomePanel />
-        <ShapePanel />
-        <EditsPanel />
+        {#if world.info}
+          <OpenWorldPanel />
+        {:else}
+          <PresetPanel />
+          <WorldPanel />
+          <BiomePanel />
+          <ShapePanel />
+          <EditsPanel />
+        {/if}
       </aside>
       <main class="views" class:v3d={app.ui.view === '3d'} class:vmap={app.ui.view === 'map'}>
         <section class="pane pane-3d"><Viewport3D /></section>
-        <section class="pane pane-map"><MapEditor /></section>
+        <section class="pane pane-map">
+          {#if world.info}<WorldMap />{:else}<MapEditor />{/if}
+        </section>
       </main>
     </div>
     <StatusBar />
