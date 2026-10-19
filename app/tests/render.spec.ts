@@ -114,6 +114,29 @@ test('moving the camera shows the quick view, and the render fades in once it st
   expect(problems).toEqual([]);
 });
 
+test('after the graphics card drops the render, it carries on once the card is back', async ({ page }) => {
+  const problems = await open(page, { calls: {} });
+  await page.getByTestId('view-mode-render').click();
+  await page.getByTestId('render-build').click();
+  await expect.poll(async () => (await tracerState(page)).samples, { timeout: 30_000 }).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    const t = (window as unknown as { __vistaforgeTracer: { gl: WebGL2RenderingContext } }).__vistaforgeTracer;
+    const ext = t.gl.getExtension('WEBGL_lose_context')!;
+    (window as unknown as { __lose: WEBGL_lose_context }).__lose = ext;
+    ext.loseContext();
+  });
+  await expect(page.getByText('The graphics card stopped the render')).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __lose: WEBGL_lose_context }).__lose.restoreContext());
+
+  // A new tracer on the same canvas picks the scene up again, with no click.
+  await expect(page.getByText('The graphics card stopped the render')).toHaveCount(0);
+  await expect.poll(async () => (await tracerState(page)).samples, { timeout: 30_000 }).toBeGreaterThan(0);
+  await expect.poll(() => spread(page), { timeout: 30_000 }).toBeGreaterThan(8);
+  expect((await calls(page)).renderScene).toBe(1);
+  expect(problems).toEqual([]);
+});
+
 test('render mode says when the map changed', async ({ page }) => {
   const problems = await open(page, { calls: {} });
   await page.getByTestId('view-mode-render').click();

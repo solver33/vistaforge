@@ -10,8 +10,11 @@
   let canvas = $state<HTMLCanvasElement | null>(null);
   let minimap = $state<HTMLCanvasElement | null>(null);
   let tracer = $state.raw<PathTracer | null>(null);
-  /** Bumped to start a fresh tracer after the graphics card dropped the old one. */
+  /** Bumped to start a fresh tracer on a new canvas after the graphics card dropped the old one. */
   let generation = $state(0);
+  /** Bumped to start a fresh tracer on the same canvas once its context is back. */
+  let revive = $state(0);
+  let keepContext = false;
   let panel = $state(true);
   const problem = unsupported();
   let rememberTimer: ReturnType<typeof setTimeout> | undefined;
@@ -22,6 +25,7 @@
 
   $effect(() => {
     void generation;
+    void revive;
     const c = canvas;
     if (!c || problem) return;
     let t: PathTracer;
@@ -34,9 +38,24 @@
     tracer = t;
     (window as unknown as { __vistaforgeTracer?: PathTracer }).__vistaforgeTracer = t;
     return () => {
-      t.dispose();
+      t.dispose(keepContext);
+      keepContext = false;
       tracer = null;
     };
+  });
+
+  // After the graphics card was reset, the browser gives the canvas its context back: carry on
+  // there (a new canvas may be refused a context after a reset).
+  $effect(() => {
+    const c = canvas;
+    if (!c) return;
+    const restored = () => {
+      keepContext = true;
+      render.status = null;
+      revive++;
+    };
+    c.addEventListener('webglcontextrestored', restored);
+    return () => c.removeEventListener('webglcontextrestored', restored);
   });
 
   $effect(() => {

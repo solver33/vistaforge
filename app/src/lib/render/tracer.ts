@@ -9,6 +9,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { heightPyramid, medianTop, type Scene } from './scene';
 import { fogDensity, sunDirection, type RenderSettings } from './settings';
 import { ATROUS_FS, COMPOSITE_FS, FULLSCREEN_VS, PREPARE_FS, PRESENT_FS, QUICK_FS, SKY_FS, TRACE_FS } from './shaders';
+import { Pacer } from './pacer';
 import { luminance, skyLight, sunlight, SKY_GAIN, SUN_DIRECT, SUN_POWER, SUN_RADIUS, type Vec3 } from './sky';
 
 export interface TracerStatus {
@@ -27,16 +28,20 @@ const SKY_H = 128;
 const ATROUS_PASSES = 5;
 /** Texture widths for the long data tables. */
 const TABLE_W = 4096;
-/** What one frame of the render should take, so that the window keeps up with the mouse and
- * no single draw runs long enough for the system to reset the graphics card. */
-const TRACE_MS = 40;
+/** What one batch of the render should take on the graphics card. Short batches keep the
+ * window responsive; Windows resets a card that is busy with one for two seconds. */
+const TRACE_MS = 30;
+/** What one quick view should take while moving: under a frame, so turning stays smooth. */
+const QUICK_MS = 12;
+/** The sharper quick view once still may take a few times longer, once. */
+const SETTLE_QUICK = 3;
+/** Most pixels traced at the full Resolution setting: about a 1920 × 1080 screen. Bigger
+ * screens get the picture scaled up; the images it needs would not fit some cards. */
+const MAX_PIXELS = 2_100_000;
 /** How often the picture is remade from the samples, once it has a few. */
 const DEVELOP_MS = 120;
 /** How long the camera and the light must be still before the render starts. */
 const SETTLE_MS = 250;
-/** Frame times that make the quick view coarser, or finer, while moving. */
-const QUICK_SLOW_MS = 40;
-const QUICK_FAST_MS = 21;
 /** The coarsest quick view, as a share of the picture's width. */
 const QUICK_MIN = 0.15;
 /** Samples at which the render starts to show over the quick view, and covers it (with the
@@ -47,7 +52,24 @@ const FADE_FULL_RAW = 16;
 /** The shortest fade from the quick view to the render. */
 const FADE_MS = 300;
 
+/** Times the graphics card has dropped the render in this window: each halves the pixels. */
+let losses = 0;
+
 type Uniforms = Map<string, WebGLUniformLocation | null>;
+
+/** A batch of work handed to the graphics card: what it was, and how to tell it is done. */
+interface Job {
+  kind: 'quick' | 'trace' | 'develop';
+  units: number;
+  at: number;
+  sync: WebGLSync | null;
+  query: WebGLQuery | null;
+}
+
+interface TimerQuery {
+  TIME_ELAPSED_EXT: number;
+  GPU_DISJOINT_EXT: number;
+}
 
 interface Program {
   program: WebGLProgram;
@@ -77,6 +99,7 @@ export class PathTracer {
   readonly controls: OrbitControls;
   private readonly gl: WebGL2RenderingContext;
   private readonly parallel: { COMPLETION_STATUS_KHR: number } | null;
+  private readonly timer: TimerQuery | null;
   private readonly floatBlend: boolean;
   private readonly maxTexture: number;
   private readonly vao: WebGLVertexArrayObject;
@@ -110,12 +133,14 @@ export class PathTracer {
 
   private samples = 0;
   private seed = 0;
-  /** The next row of this sample to trace, and how many rows to trace per frame. */
+  /** The next row of this sample to trace. */
   private row = 0;
-  private rows = 1;
-  /** What a row of one sample has been taking, for choosing `rows`. */
-  private msPerRow = 0;
   private lastDevelop = 0;
+  /** Rows of the render, and pixels of the quick view, per batch. */
+  private readonly tracePacer = new Pacer({ targetMs: TRACE_MS, start: 24, min: 4 });
+  private readonly quickPacer = new Pacer({ targetMs: QUICK_MS, start: 120_000, min: 4096 });
+  private job: Job | null = null;
+  private frameMs = 16.7;
   private started = performance.now();
   private finishedAt = 0;
   private skyDirty = true;
@@ -124,13 +149,8 @@ export class PathTracer {
   private moving = false;
   private lastMove = 0;
   private lastFrame = 0;
-  /** What the last frame drew, which is what its time says something about. */
-  private lastDrew: 'quick' | 'trace' | 'none' = 'none';
-  private lastRows = 0;
 
   private quickDirty = true;
-  /** Share of the picture's width the quick view is drawn at while moving. */
-  private quickShare = 0.5;
   /** Size of the quick view now in its image, from the corner. */
   private quickW = 1;
   private quickH = 1;
@@ -159,11 +179,18 @@ export class PathTracer {
       preserveDrawingBuffer: false,
       powerPreference: 'high-performance',
     });
-    if (!gl) throw new Error('WebGL 2 is unavailable.');
+    if (!gl) {
+      throw new Error(
+        losses > 0
+          ? 'The graphics card isn’t available to Vistaforge after it was reset. Close Vistaforge and open it again.'
+          : 'WebGL 2 is unavailable.',
+      );
+    }
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('Floating-point images are unavailable.');
     this.gl = gl;
     this.floatBlend = !!gl.getExtension('EXT_float_blend');
     this.parallel = gl.getExtension('KHR_parallel_shader_compile') as { COMPLETION_STATUS_KHR: number } | null;
+    this.timer = gl.getExtension('EXT_disjoint_timer_query_webgl2') as TimerQuery | null;
     this.maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
     this.vao = gl.createVertexArray()!;
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -198,17 +225,21 @@ export class PathTracer {
     this.raf = requestAnimationFrame(this.frame);
   }
 
-  dispose(): void {
+  /** Stops and frees the tracer. With `keepContext`, the canvas's context stays usable for a
+   * new tracer (after the graphics card was reset and the context came back). */
+  dispose(keepContext = false): void {
     cancelAnimationFrame(this.raf);
     this.resize.disconnect();
     this.controls.dispose();
     this.canvas.removeEventListener('webglcontextlost', this.onLost);
+    // Whatever was made before a reset is gone with it.
+    if (this.lost) return;
     const gl = this.gl;
     this.dropScene();
     for (const t of [this.sky, this.accum, this.prep, this.pingA, this.pingB, this.out, this.quick]) this.dropTarget(t);
     for (const p of Object.values(this.programs)) gl.deleteProgram(p.program);
     gl.deleteVertexArray(this.vao);
-    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    if (!keepContext) gl.getExtension('WEBGL_lose_context')?.loseContext();
   }
 
   // ---- What to draw ---------------------------------------------------------------------
@@ -341,14 +372,12 @@ export class PathTracer {
       }
       if (!this.check()) return;
     }
-    const dt = now - this.lastFrame;
+    const dt = Math.min(Math.max(now - this.lastFrame, 4), 100);
     this.lastFrame = now;
-    const lastDrew = this.lastDrew;
-    this.lastDrew = 'none';
-    this.fitSize();
-    if (this.skyDirty) this.drawSky();
+    this.frameMs = this.frameMs * 0.9 + dt * 0.1;
     const gl = this.gl;
     if (!this.scene) {
+      this.fitSize();
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, this.canvas.width, this.canvas.height);
       gl.clearColor(0.66, 0.78, 0.86, 1);
@@ -361,54 +390,19 @@ export class PathTracer {
       if (this.quickW < this.width) this.quickDirty = true;
     }
 
-    if (this.quickDirty) {
-      if (this.moving) {
-        // When the last frame drew only the quick view, its time says what that cost.
-        if (lastDrew === 'quick') {
-          if (dt > QUICK_SLOW_MS) this.quickShare *= Math.max(0.6, Math.sqrt(30 / dt));
-          else if (dt < QUICK_FAST_MS) this.quickShare *= 1.12;
-          this.quickShare = Math.min(1, Math.max(QUICK_MIN, this.quickShare));
-        }
-        this.drawQuick(this.quickShare);
-      } else {
-        // At most about four times the cost of a frame while moving.
-        this.drawQuick(Math.min(1, this.quickShare * 2));
-      }
-      this.lastDrew = 'quick';
-      this.presentDirty = true;
-    } else if (!this.moving && this.samples < this.settings.samples) {
-      // As many rows as fit in TRACE_MS, going by what the last ones took.
-      if (lastDrew === 'trace' && this.lastRows > 0) {
-        const per = dt / this.lastRows;
-        this.msPerRow = this.msPerRow > 0 ? this.msPerRow * 0.7 + per * 0.3 : per;
-      }
-      if (this.msPerRow > 0) this.rows = Math.round(TRACE_MS / this.msPerRow);
-      this.rows = Math.min(this.height, Math.max(4, this.rows));
-      if (this.row === 0) this.seed++;
-      const rows = Math.min(this.rows, this.height - this.row);
-      this.trace(this.row, rows);
-      this.lastDrew = 'trace';
-      this.lastRows = rows;
-      this.row += rows;
-      if (this.row >= this.height) {
-        this.row = 0;
-        this.samples++;
-        this.pictureDirty = true;
-        if (this.samples >= this.settings.samples) this.finishedAt = now;
-      }
+    // One batch of work at a time: nothing more is handed to the graphics card until it has
+    // finished the last one, so work never piles up behind the window's own drawing.
+    if (this.job && this.finished(now)) this.job = null;
+    if (!this.job) {
+      this.fitSize();
+      if (this.skyDirty) this.drawSky();
+      this.nextJob(now);
     }
-    // Remade after every early sample, then now and then: it is not free.
-    const due = this.samples <= FADE_FULL_RAW || this.finishedAt === now || now - this.lastDevelop > DEVELOP_MS;
-    if (!this.moving && this.pictureDirty && this.samples > 0 && due) {
-      this.pictureDirty = false;
-      this.lastDevelop = now;
-      this.develop();
-      this.presentDirty = true;
-    }
+
     // The render shows through the quick view as its samples add up, never faster than FADE_MS.
     const goal = this.fadeGoal();
     if (goal > this.mix) {
-      this.mix = Math.min(goal, this.mix + Math.min(dt, 100) / FADE_MS);
+      this.mix = Math.min(goal, this.mix + dt / FADE_MS);
       this.presentDirty = true;
     }
     if (this.presentDirty && this.out && this.quick) {
@@ -417,6 +411,90 @@ export class PathTracer {
     }
     this.status(now, false);
   };
+
+  /** Hands the graphics card the next piece of work, if there is any. */
+  private nextJob(now: number): void {
+    const all = this.width * this.height;
+    if (this.quickDirty) {
+      // While moving, as much of the quick view as fits in QUICK_MS; once still, a few times that.
+      const pixels = this.moving
+        ? this.quickPacer.next(all)
+        : Math.min(all, this.quickPacer.next(all) * SETTLE_QUICK);
+      const share = Math.max(QUICK_MIN, Math.min(1, Math.sqrt(pixels / all)));
+      this.begin('quick', Math.round(share * this.width) * Math.round(share * this.height), now);
+      this.drawQuick(share);
+      this.end();
+      this.presentDirty = true;
+      return;
+    }
+    if (this.moving) return;
+    const due = this.samples <= FADE_FULL_RAW || this.samples >= this.settings.samples || now - this.lastDevelop > DEVELOP_MS;
+    if (this.pictureDirty && this.samples > 0 && due) {
+      this.pictureDirty = false;
+      this.lastDevelop = now;
+      this.begin('develop', 1, now);
+      this.develop();
+      this.end();
+      this.presentDirty = true;
+      return;
+    }
+    if (this.samples >= this.settings.samples) return;
+    if (this.row === 0) this.seed++;
+    const rows = Math.min(Math.round(this.tracePacer.next(this.height)), this.height - this.row);
+    this.begin('trace', rows, now);
+    this.trace(this.row, rows);
+    this.end();
+    this.row += rows;
+    if (this.row >= this.height) {
+      this.row = 0;
+      this.samples++;
+      this.pictureDirty = true;
+      if (this.samples >= this.settings.samples) this.finishedAt = now;
+    }
+  }
+
+  private begin(kind: Job['kind'], units: number, now: number): void {
+    const gl = this.gl;
+    let query: WebGLQuery | null = null;
+    if (this.timer) {
+      query = gl.createQuery();
+      if (query) gl.beginQuery(this.timer.TIME_ELAPSED_EXT, query);
+    }
+    this.job = { kind, units, at: now, sync: null, query };
+  }
+
+  private end(): void {
+    const gl = this.gl;
+    const job = this.job!;
+    if (job.query) gl.endQuery(this.timer!.TIME_ELAPSED_EXT);
+    job.sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+  }
+
+  /** Whether the graphics card has done the last batch; if so, its time sizes the next one. */
+  private finished(now: number): boolean {
+    const gl = this.gl;
+    const job = this.job!;
+    if (job.sync && gl.getSyncParameter(job.sync, gl.SYNC_STATUS) !== gl.SIGNALED) {
+      // Never wait forever on a fence the card has dropped.
+      if (now - job.at < 10_000) return false;
+    }
+    let ms = now - job.at;
+    let quantum = this.frameMs;
+    if (job.query) {
+      const ready = gl.getQueryParameter(job.query, gl.QUERY_RESULT_AVAILABLE) as boolean;
+      const disjoint = gl.getParameter(this.timer!.GPU_DISJOINT_EXT) as boolean;
+      if (ready && !disjoint) {
+        ms = (gl.getQueryParameter(job.query, gl.QUERY_RESULT) as number) / 1e6;
+        quantum = 0;
+      }
+      gl.deleteQuery(job.query);
+    }
+    if (job.sync) gl.deleteSync(job.sync);
+    if (job.kind === 'trace') this.tracePacer.took(job.units, ms, quantum, this.height);
+    else if (job.kind === 'quick' && this.moving) this.quickPacer.took(job.units, ms, quantum, this.width * this.height);
+    return true;
+  }
 
   private fadeGoal(): number {
     if (this.moving || this.samples === 0) return 0;
@@ -448,8 +526,6 @@ export class PathTracer {
   private restart(): void {
     this.samples = 0;
     this.row = 0;
-    // Until there is a time to go by, a quarter of the picture per frame.
-    if (this.msPerRow <= 0) this.rows = Math.ceil(this.height / 4);
     this.finishedAt = 0;
     this.started = performance.now();
     // The old picture is of something else now: back to the quick view.
@@ -459,8 +535,11 @@ export class PathTracer {
   }
 
   private readonly onLost = (e: Event) => {
+    // Asks for the context back, so a new tracer can use this canvas again.
     e.preventDefault();
     this.lost = true;
+    this.job = null;
+    losses++;
     this.onStatus({
       samples: 0,
       target: this.settings.samples,
@@ -517,8 +596,13 @@ export class PathTracer {
       this.canvas.height = ch;
       this.presentDirty = true;
     }
-    const w = Math.max(1, Math.round(cw * this.settings.scale));
-    const h = Math.max(1, Math.round(ch * this.settings.scale));
+    // A new size waits until things stop moving: dragging the Resolution slider would otherwise
+    // remake these large images on every step.
+    if (this.moving && this.accum) return;
+    const budget = MAX_PIXELS / 2 ** Math.min(losses, 2);
+    const fit = Math.min(1, Math.sqrt(budget / (cw * ch))) * this.settings.scale;
+    const w = Math.max(1, Math.round(cw * fit));
+    const h = Math.max(1, Math.round(ch * fit));
     if (w === this.width && h === this.height && this.accum) return;
     this.width = w;
     this.height = h;
@@ -536,7 +620,6 @@ export class PathTracer {
     this.quick = this.target(w, h, [gl.RGBA8], gl.LINEAR);
     this.quickW = 1;
     this.quickH = 1;
-    this.msPerRow = 0;
     this.restart();
   }
 
