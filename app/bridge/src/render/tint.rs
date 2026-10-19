@@ -66,7 +66,9 @@ fn biome(id: &str) -> BiomeColors {
         "old_growth_spruce_taiga" => b(0.25, 0.8),
         "snowy_taiga" => b(-0.5, 0.4),
         "snowy_plains" | "ice_spikes" => b(0.0, 0.5),
-        "windswept_hills" | "windswept_gravelly_hills" | "windswept_forest" | "stony_shore" => b(0.2, 0.3),
+        "windswept_hills" | "windswept_gravelly_hills" | "windswept_forest" | "stony_shore" => {
+            b(0.2, 0.3)
+        }
         "snowy_slopes" | "grove" => b(-0.3, 0.9),
         "frozen_peaks" | "jagged_peaks" => b(-0.7, 0.9),
         "stony_peaks" => b(1.0, 0.3),
@@ -150,7 +152,10 @@ impl ColorMaps {
 
 /// Vanilla's colour map values for the climates above, for when the map is missing.
 fn fallback(temperature: f32, downfall: f32) -> (u32, u32) {
-    let key = ((temperature * 100.0).round() as i32, (downfall * 100.0).round() as i32);
+    let key = (
+        (temperature * 100.0).round() as i32,
+        (downfall * 100.0).round() as i32,
+    );
     match key {
         (80, 40) => (0x91BD59, 0x77AB2F),
         (50, 80) => (0x83BB6D, 0x63A948),
@@ -183,7 +188,7 @@ pub fn blend(colors: &[u32], side: usize) -> Vec<u32> {
                     n += 1;
                 }
             }
-            out[z * side + x] = (sum[0] / n) << 16 | (sum[1] / n) << 8 | sum[2] / n;
+            out[z * side + x] = ((sum[0] / n) << 16) | ((sum[1] / n) << 8) | (sum[2] / n);
         }
     }
     out
@@ -196,8 +201,14 @@ mod tests {
     #[test]
     fn biome_colours_without_colour_maps() {
         let maps = ColorMaps::load(None);
-        assert_eq!(maps.colors("minecraft:plains"), [0x91BD59, 0x77AB2F, 0x3F76E4]);
-        assert_eq!(maps.colors("minecraft:swamp"), [0x6A7039, 0x6A7039, 0x617B64]);
+        assert_eq!(
+            maps.colors("minecraft:plains"),
+            [0x91BD59, 0x77AB2F, 0x3F76E4]
+        );
+        assert_eq!(
+            maps.colors("minecraft:swamp"),
+            [0x6A7039, 0x6A7039, 0x617B64]
+        );
         assert_eq!(maps.colors("minecraft:warm_ocean")[2], 0x43D5EE);
         assert_eq!(Tint::from_catalog(0x7BA24F), Tint::Grass);
         assert_eq!(Tint::from_catalog(0x829841), Tint::Foliage);

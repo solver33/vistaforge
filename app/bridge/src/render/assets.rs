@@ -229,16 +229,13 @@ pub fn minecraft_jar(game_dir: &Path, version: &str) -> Option<PathBuf> {
         vec!["install", "versions", version, &file],
         vec!["meta", "versions", version, &file],
         vec!["minecraft", "versions", version, &file],
-        vec![
-            "libraries",
-            "com",
-            "mojang",
-            "minecraft",
-            version,
-            &client,
-        ],
+        vec!["libraries", "com", "mojang", "minecraft", version, &client],
     ];
-    let mut bases: Vec<PathBuf> = game_dir.ancestors().take(6).map(Path::to_path_buf).collect();
+    let mut bases: Vec<PathBuf> = game_dir
+        .ancestors()
+        .take(6)
+        .map(Path::to_path_buf)
+        .collect();
     for var in ["APPDATA", "HOME"] {
         if let Some(home) = std::env::var_os(var) {
             bases.push(PathBuf::from(home).join(".minecraft"));
@@ -269,7 +266,8 @@ pub(crate) mod tests {
     }
 
     pub fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vistaforge-assets-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("vistaforge-assets-{name}-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -291,8 +289,10 @@ pub(crate) mod tests {
         );
         let game = base.join("minecraft/Instances/CR Pack");
         std::fs::create_dir_all(game.join("mods")).unwrap();
-        std::fs::create_dir_all(game.join("resourcepacks/Folder Pack/assets/minecraft/textures/block"))
-            .unwrap();
+        std::fs::create_dir_all(
+            game.join("resourcepacks/Folder Pack/assets/minecraft/textures/block"),
+        )
+        .unwrap();
         std::fs::write(
             game.join("resourcepacks/Folder Pack/assets/minecraft/textures/block/dirt.png"),
             b"pack",
@@ -303,8 +303,14 @@ pub(crate) mod tests {
             &[
                 ("assets/minecraft/textures/block/stone.png", b"conquest"),
                 ("assets/minecraft/textures/block/dirt.png", b"conquest"),
-                ("resourcepacks/extra/assets/minecraft/textures/block/sand.png", b"built-in"),
-                ("resourcepacks/off/assets/minecraft/textures/block/gravel.png", b"off"),
+                (
+                    "resourcepacks/extra/assets/minecraft/textures/block/sand.png",
+                    b"built-in",
+                ),
+                (
+                    "resourcepacks/off/assets/minecraft/textures/block/gravel.png",
+                    b"off",
+                ),
             ],
         );
         std::fs::write(game.join("mods/old.jar.disabled"), b"").unwrap();
@@ -321,9 +327,18 @@ pub(crate) mod tests {
 
         let assets = Assets::open(&game, "1.20.1").unwrap();
         let read = |p: &str| assets.read(p).map(|b| String::from_utf8(b).unwrap());
-        assert_eq!(read("assets/minecraft/textures/block/stone.png").unwrap(), "conquest");
-        assert_eq!(read("assets/minecraft/textures/block/dirt.png").unwrap(), "pack");
-        assert_eq!(read("assets/minecraft/textures/block/sand.png").unwrap(), "built-in");
+        assert_eq!(
+            read("assets/minecraft/textures/block/stone.png").unwrap(),
+            "conquest"
+        );
+        assert_eq!(
+            read("assets/minecraft/textures/block/dirt.png").unwrap(),
+            "pack"
+        );
+        assert_eq!(
+            read("assets/minecraft/textures/block/sand.png").unwrap(),
+            "built-in"
+        );
         assert!(read("assets/minecraft/textures/block/gravel.png").is_none());
         assert!(assets.has("assets/minecraft/models/block/cube.json"));
         assert!(!assets.has("net/minecraft/Foo.class"));

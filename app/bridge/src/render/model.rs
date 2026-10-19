@@ -59,7 +59,14 @@ pub enum Dir {
 }
 
 impl Dir {
-    pub const ALL: [Dir; 6] = [Dir::Down, Dir::Up, Dir::North, Dir::South, Dir::West, Dir::East];
+    pub const ALL: [Dir; 6] = [
+        Dir::Down,
+        Dir::Up,
+        Dir::North,
+        Dir::South,
+        Dir::West,
+        Dir::East,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -328,12 +335,7 @@ impl<'a> Models<'a> {
         for element in merged.elements.iter().flatten() {
             element_quads(element, &merged.textures, &mut quads);
         }
-        Some(
-            quads
-                .into_iter()
-                .map(|q| variant_rotation(q, v))
-                .collect(),
-        )
+        Some(quads.into_iter().map(|q| variant_rotation(q, v)).collect())
     }
 
     /// The shape of a block state, or `None` when its blockstate file or models are missing.
@@ -349,19 +351,22 @@ impl<'a> Models<'a> {
             for v in weighted(&variants(chosen.1)) {
                 slots.push(vec![v]);
             }
-        } else if let Some(parts) = def.get("multipart").and_then(Value::as_array) {
+        } else {
+            let parts = def.get("multipart").and_then(Value::as_array)?;
             let applied: Vec<Vec<Variant>> = parts
                 .iter()
                 .filter(|p| p.get("when").is_none_or(|w| when_matches(w, state)))
                 .filter_map(|p| p.get("apply").map(variants))
                 .filter(|v| !v.is_empty())
                 .collect();
-            let n = applied.iter().map(|a| a.len().min(MAX_SLOTS)).max().unwrap_or(1);
+            let n = applied
+                .iter()
+                .map(|a| a.len().min(MAX_SLOTS))
+                .max()
+                .unwrap_or(1);
             for i in 0..n {
                 slots.push(applied.iter().map(|a| a[i % a.len()].clone()).collect());
             }
-        } else {
-            return None;
         }
         let mut shape = Shape::default();
         let mut baked = 0;
@@ -399,7 +404,8 @@ fn weighted(list: &[Variant]) -> Vec<Variant> {
         let best = list
             .iter()
             .max_by(|a, b| {
-                let need = |v: &Variant| v.weight as f32 / total as f32 * MAX_SLOTS as f32 - have(v);
+                let need =
+                    |v: &Variant| v.weight as f32 / total as f32 * MAX_SLOTS as f32 - have(v);
                 need(a).total_cmp(&need(b))
             })
             .unwrap()
@@ -478,7 +484,8 @@ fn element_quads(element: &Value, textures: &Map<String, Value>, out: &mut Vec<Q
         // Corner texture coordinates, top-left, top-right, bottom-left, after the face's own
         // rotation, which turns the texture clockwise on the face.
         let corner = [[u1, v1], [u2, v1], [u2, v2], [u1, v2]];
-        let turn = ((face.get("rotation").and_then(Value::as_i64).unwrap_or(0) / 90).rem_euclid(4)) as usize;
+        let turn = ((face.get("rotation").and_then(Value::as_i64).unwrap_or(0) / 90).rem_euclid(4))
+            as usize;
         let at = |i: usize| corner[(i + 4 - turn) % 4];
         let (tl, tr, bl) = (at(0), at(1), at(3));
         let s = 1.0 / 16.0;
@@ -544,7 +551,11 @@ fn variant_rotation(q: Quad, v: &Variant) -> Quad {
 pub fn is_full_cube(quads: &[Quad]) -> bool {
     quads.len() == 6
         && Dir::ALL.iter().all(|&d| {
-            quads.iter().filter(|q| Dir::of(q.normal()) == Some(d)).count() == 1
+            quads
+                .iter()
+                .filter(|q| Dir::of(q.normal()) == Some(d))
+                .count()
+                == 1
         })
         && quads.iter().all(|q| {
             let c = q.corners();
@@ -564,7 +575,12 @@ pub fn is_full_cube(quads: &[Quad]) -> bool {
 pub fn cube_order(quads: &[Quad]) -> Vec<Quad> {
     Dir::ALL
         .iter()
-        .filter_map(|&d| quads.iter().find(|q| Dir::of(q.normal()) == Some(d)).cloned())
+        .filter_map(|&d| {
+            quads
+                .iter()
+                .find(|q| Dir::of(q.normal()) == Some(d))
+                .cloned()
+        })
         .collect()
 }
 
@@ -577,7 +593,10 @@ mod tests {
     fn state(name: &str, props: &[(&str, &str)]) -> BlockState {
         BlockState {
             name: name.into(),
-            props: props.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            props: props
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         }
     }
 
@@ -645,7 +664,14 @@ mod tests {
         let tex: Vec<&str> = quads.iter().map(|q| q.texture.as_str()).collect();
         assert_eq!(
             tex,
-            ["test:block/log", "test:block/log", "test:block/log_top", "test:block/log_top", "test:block/log", "test:block/log"]
+            [
+                "test:block/log",
+                "test:block/log",
+                "test:block/log_top",
+                "test:block/log_top",
+                "test:block/log",
+                "test:block/log"
+            ]
         );
         // Along x: ends east and west.
         let log = m.shape(&state("test:log", &[("axis", "x")])).unwrap();
@@ -660,14 +686,25 @@ mod tests {
     fn faces_map_textures_like_the_game() {
         let a = assets(
             "faces",
-            &[(
-                "assets/minecraft/models/block/slab.json",
-                r##"{"textures":{"t":"block/x"},"elements":[{"from":[0,0,0],"to":[16,8,16],"faces":{
+            &[
+                (
+                    "assets/minecraft/models/block/slab.json",
+                    r##"{"textures":{"t":"block/x"},"elements":[{"from":[0,0,0],"to":[16,8,16],"faces":{
                     "north":{"texture":"#t"},"up":{"texture":"#t","uv":[0,0,16,16],"rotation":90}}}]}"##,
-            ), ("assets/minecraft/blockstates/slab.json", r#"{"variants":{"":{"model":"block/slab"}}}"#)],
+                ),
+                (
+                    "assets/minecraft/blockstates/slab.json",
+                    r#"{"variants":{"":{"model":"block/slab"}}}"#,
+                ),
+            ],
         );
-        let shape = Models::new(&a).shape(&state("minecraft:slab", &[])).unwrap();
-        let north = shape.slots[0].iter().find(|q| Dir::of(q.normal()) == Some(Dir::North)).unwrap();
+        let shape = Models::new(&a)
+            .shape(&state("minecraft:slab", &[]))
+            .unwrap();
+        let north = shape.slots[0]
+            .iter()
+            .find(|q| Dir::of(q.normal()) == Some(Dir::North))
+            .unwrap();
         // Seen from the north, the top-left of the texture is at the north-east top corner, and
         // a half-height face shows the lower half of the texture.
         assert_eq!(north.o, [1.0, 0.5, 0.0]);
@@ -675,7 +712,10 @@ mod tests {
         assert_eq!(north.v, [0.0, -0.5, 0.0]);
         assert_eq!(north.uv, [[0.0, 0.5], [1.0, 0.0], [0.0, 0.5]]);
         // Turning the texture 90° clockwise puts its bottom-left at the face's top-left.
-        let up = shape.slots[0].iter().find(|q| Dir::of(q.normal()) == Some(Dir::Up)).unwrap();
+        let up = shape.slots[0]
+            .iter()
+            .find(|q| Dir::of(q.normal()) == Some(Dir::Up))
+            .unwrap();
         assert_eq!(up.uv[0], [0.0, 1.0]);
         assert_eq!(up.uv[1], [0.0, -1.0]);
         assert_eq!(up.uv[2], [1.0, 0.0]);
@@ -707,12 +747,19 @@ mod tests {
                         "rotation":{"origin":[8,8,8],"axis":"y","angle":45,"rescale":true},
                         "faces":{"north":{"texture":"#cross"},"south":{"texture":"#cross"}}}]}"##,
                 ),
-                ("assets/test/blockstates/fern.json", r#"{"variants":{"":{"model":"test:block/cross"}}}"#),
+                (
+                    "assets/test/blockstates/fern.json",
+                    r#"{"variants":{"":{"model":"test:block/cross"}}}"#,
+                ),
             ],
         );
         let mut m = Models::new(&a);
-        let mut s = |p: &[(&str, &str)]| m.shape(&state("test:branch", p)).unwrap().slots[0].clone();
-        assert_eq!(s(&[("north", "false"), ("east", "false"), ("west", "false")]).len(), 1);
+        let mut s =
+            |p: &[(&str, &str)]| m.shape(&state("test:branch", p)).unwrap().slots[0].clone();
+        assert_eq!(
+            s(&[("north", "false"), ("east", "false"), ("west", "false")]).len(),
+            1
+        );
         let both = s(&[("north", "true"), ("east", "false"), ("west", "true")]);
         assert_eq!(both.len(), 3);
         // The arm turned by y=90 faces east: its texture side points the other way round.
@@ -743,15 +790,24 @@ mod tests {
                 ),
             ],
         );
-        let shape = Models::new(&a).shape(&state("test:half", &[("facing", "east")])).unwrap();
+        let shape = Models::new(&a)
+            .shape(&state("test:half", &[("facing", "east")]))
+            .unwrap();
         let up = &shape.slots[0][0];
         // Each corner's texture coordinates are its x and z, as on an unrotated top face.
-        for (p, k) in [(up.o, [0.0, 0.0]), (add(up.o, up.u), [1.0, 0.0]), (add(up.o, up.v), [0.0, 1.0])] {
+        for (p, k) in [
+            (up.o, [0.0, 0.0]),
+            (add(up.o, up.u), [1.0, 0.0]),
+            (add(up.o, up.v), [0.0, 1.0]),
+        ] {
             let uv = [
                 up.uv[0][0] + up.uv[1][0] * k[0] + up.uv[2][0] * k[1],
                 up.uv[0][1] + up.uv[1][1] * k[0] + up.uv[2][1] * k[1],
             ];
-            assert!((uv[0] - p[0]).abs() < 1e-4 && (uv[1] - p[2]).abs() < 1e-4, "{p:?} {uv:?}");
+            assert!(
+                (uv[0] - p[0]).abs() < 1e-4 && (uv[1] - p[2]).abs() < 1e-4,
+                "{p:?} {uv:?}"
+            );
         }
     }
 }

@@ -32,7 +32,7 @@ pub mod model;
 pub mod texture;
 pub mod tint;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -196,7 +196,8 @@ pub fn build(
     let started = Instant::now();
     let size = generator.size();
     let side = req.size.clamp(16, 2048).next_power_of_two() as i32;
-    let area = Rect::new(req.x0, req.z0, req.x0 + side, req.z0 + side).intersect(&Rect::square(size));
+    let area =
+        Rect::new(req.x0, req.z0, req.x0 + side, req.z0 + side).intersect(&Rect::square(size));
     if area.is_empty() {
         bail!("the render area is outside the map");
     }
@@ -212,19 +213,32 @@ pub fn build(
             .collect()
     };
     let mut blocks = resolve(library, 0);
-    let solid: Vec<bool> = blocks.iter().map(|b| b.full_cube && b.kind == Kind::Solid).collect();
-    let wet: Vec<bool> = blocks.iter().map(|b| b.kind == Kind::Water || b.waterlogged).collect();
+    let solid: Vec<bool> = blocks
+        .iter()
+        .map(|b| b.full_cube && b.kind == Kind::Solid)
+        .collect();
+    let wet: Vec<bool> = blocks
+        .iter()
+        .map(|b| b.kind == Kind::Water || b.waterlogged)
+        .collect();
 
     let mut units = Vec::new();
     for x in (area.x0..area.x1).step_by(64) {
         for z in (area.z0..area.z1).step_by(64) {
-            units.push(Rect::new(x, z, (x + 64).min(area.x1), (z + 64).min(area.z1)));
+            units.push(Rect::new(
+                x,
+                z,
+                (x + 64).min(area.x1),
+                (z + 64).min(area.z1),
+            ));
         }
     }
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Unit>>> = Mutex::new((0..units.len()).map(|_| None).collect());
-    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     let colors = &library.colormaps;
     std::thread::scope(|scope| {
         for _ in 0..workers {
@@ -237,7 +251,12 @@ pub fn build(
             });
         }
     });
-    let units: Vec<Unit> = results.into_inner().unwrap().into_iter().flatten().collect();
+    let units: Vec<Unit> = results
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .flatten()
+        .collect();
 
     // States a module added while generating, if any.
     if generator.palette.len() > blocks.len() {
@@ -280,7 +299,11 @@ pub fn build(
             }
             columns[4 * i] = voxels.len() as u32;
             columns[4 * i + 1] = ((bottom - MIN_Y) as u32) | count << 16;
-            voxels.extend(u.cells[at..at + count as usize].iter().map(|c| used.get(c).copied().unwrap_or(0)));
+            voxels.extend(
+                u.cells[at..at + count as usize]
+                    .iter()
+                    .map(|c| used.get(c).copied().unwrap_or(0)),
+            );
             at += count as usize;
             if count > 0 {
                 min_y = min_y.min(bottom);
@@ -314,7 +337,11 @@ pub fn build(
     for i in 0..s * s {
         columns[4 * i + 2] = grass[i];
         columns[4 * i + 3] = foliage[i];
-        water[4 * i..4 * i + 3].copy_from_slice(&[(water_rgb[i] >> 16) as u8, (water_rgb[i] >> 8) as u8, water_rgb[i] as u8]);
+        water[4 * i..4 * i + 3].copy_from_slice(&[
+            (water_rgb[i] >> 16) as u8,
+            (water_rgb[i] >> 8) as u8,
+            water_rgb[i] as u8,
+        ]);
     }
 
     // States, quads and the textures they use.
@@ -333,14 +360,19 @@ pub fn build(
     let textures: Vec<(String, Arc<texture::Texture>)> = tiles
         .keys()
         .map(|k| {
-            let t = library.texture(k).unwrap_or_else(|| Arc::new(texture::Texture::solid(0xFF00FF)));
+            let t = library
+                .texture(k)
+                .unwrap_or_else(|| Arc::new(texture::Texture::solid(0xFF00FF)));
             (k.clone(), t)
         })
         .collect();
     for (i, v) in tiles.values_mut().enumerate() {
         *v = i as u32;
     }
-    let opaque: HashMap<&str, bool> = textures.iter().map(|(k, t)| (k.as_str(), t.opaque())).collect();
+    let opaque: HashMap<&str, bool> = textures
+        .iter()
+        .map(|(k, t)| (k.as_str(), t.opaque()))
+        .collect();
     let tile = textures
         .iter()
         .map(|(_, t)| t.width.max(t.height))
@@ -379,15 +411,34 @@ pub fn build(
                 }
                 let (kind, rgb) = f.tint.code();
                 quads.extend_from_slice(&[
-                    q.o[0], q.o[1], q.o[2], tiles[&q.texture] as f32,
-                    q.u[0], q.u[1], q.u[2], kind,
-                    q.v[0], q.v[1], q.v[2], rgb as f32,
-                    q.uv[0][0], q.uv[0][1], q.uv[1][0], q.uv[1][1],
-                    q.uv[2][0], q.uv[2][1], if cutout { 1.0 } else { 0.0 }, 0.0,
+                    q.o[0],
+                    q.o[1],
+                    q.o[2],
+                    tiles[&q.texture] as f32,
+                    q.u[0],
+                    q.u[1],
+                    q.u[2],
+                    kind,
+                    q.v[0],
+                    q.v[1],
+                    q.v[2],
+                    rgb as f32,
+                    q.uv[0][0],
+                    q.uv[0][1],
+                    q.uv[1][0],
+                    q.uv[1][1],
+                    q.uv[2][0],
+                    q.uv[2][1],
+                    if cutout { 1.0 } else { 0.0 },
+                    0.0,
                 ]);
             }
         }
-        let water_tile = if b.kind == Kind::Water || b.waterlogged { tiles[&water_texture] + 1 } else { 0 };
+        let water_tile = if b.kind == Kind::Water || b.waterlogged {
+            tiles[&water_texture] + 1
+        } else {
+            0
+        };
         states.extend_from_slice(&[flags, slots as u32, b.color, water_tile]);
         states.extend_from_slice(&pairs);
     }
@@ -403,11 +454,29 @@ pub fn build(
         for row in 0..tile {
             let dst = (((ty + row) * atlas_width + tx) * 4) as usize;
             let src = (row * tile * 4) as usize;
-            atlas[dst..dst + (tile * 4) as usize].copy_from_slice(&px[src..src + (tile * 4) as usize]);
+            atlas[dst..dst + (tile * 4) as usize]
+                .copy_from_slice(&px[src..src + (tile * 4) as usize]);
         }
     }
 
-    let found = library.assets.as_ref().map(|a| a.found.clone()).unwrap_or_default();
+    // How the blocks in this area are drawn: from the game's models, or as stand-ins.
+    let shown: BTreeSet<u32> = used
+        .keys()
+        .map(|c| c & !TOP_BIT)
+        .filter(|&c| blocks[c as usize].kind == Kind::Solid)
+        .collect();
+    let mut stats = library.stats.clone();
+    stats.models = shown
+        .iter()
+        .filter(|&&c| blocks[c as usize].from_model)
+        .count();
+    stats.fallback = shown.len() - stats.models;
+
+    let found = library
+        .assets
+        .as_ref()
+        .map(|a| a.found.clone())
+        .unwrap_or_default();
     let header = Header {
         x0: area.x0,
         z0: area.z0,
@@ -429,11 +498,13 @@ pub fn build(
             minecraft_jar: found.minecraft_jar.is_some(),
             mods: found.mods,
             packs: found.packs,
-            stats: library.stats.clone(),
+            stats,
         },
         seconds: started.elapsed().as_secs_f64(),
     };
-    Ok(pack(&header, &columns, &water, &voxels, &states, &quads, &atlas))
+    Ok(pack(
+        &header, &columns, &water, &voxels, &states, &quads, &atlas,
+    ))
 }
 
 fn library_water_texture(library: &mut Library) -> String {
@@ -445,13 +516,22 @@ fn library_water_texture(library: &mut Library) -> String {
     }
 }
 
-fn generate_unit(generator: &Generator, colors: &tint::ColorMaps, rect: Rect, solid: &[bool], wet: &[bool]) -> Unit {
+fn generate_unit(
+    generator: &Generator,
+    colors: &tint::ColorMaps,
+    rect: Rect,
+    solid: &[bool],
+    wet: &[bool],
+) -> Unit {
     let piece = generator.generate(rect);
     let is = |table: &[bool], id: u32| table.get(id as usize).copied().unwrap_or(false);
     // The highest Y up to which a column is full, opaque blocks from the bottom.
     let solid_top = |x: i32, z: i32| -> i32 {
         let col = piece.area.column(x, z);
-        let n = col.iter().position(|&id| !is(solid, id)).unwrap_or(col.len());
+        let n = col
+            .iter()
+            .position(|&id| !is(solid, id))
+            .unwrap_or(col.len());
         MIN_Y + n as i32 - 1
     };
     let buffer = piece.area.rect;
@@ -484,10 +564,15 @@ fn generate_unit(generator: &Generator, colors: &tint::ColorMaps, rect: Rect, so
         for i in first..=top {
             let id = col[i];
             let above = col.get(i + 1).copied().unwrap_or(0);
-            let flag = if is(wet, id) && !is(wet, above) { TOP_BIT } else { 0 };
+            let flag = if is(wet, id) && !is(wet, above) {
+                TOP_BIT
+            } else {
+                0
+            };
             out.cells.push(id | flag);
         }
-        out.columns.push((MIN_Y + first as i32, (top - first + 1) as u32));
+        out.columns
+            .push((MIN_Y + first as i32, (top - first + 1) as u32));
         push_colors(&mut out, generator, colors, &piece.grid, x, z);
     }
     out
@@ -501,7 +586,10 @@ fn push_colors(
     x: i32,
     z: i32,
 ) {
-    let col = grid.try_get(x, z).copied().unwrap_or_else(|| generator.terrain.column(x, z));
+    let col = grid
+        .try_get(x, z)
+        .copied()
+        .unwrap_or_else(|| generator.terrain.column(x, z));
     let land = colors.colors(generator.surface.minecraft_biome_at(&col, i32::MAX));
     let water = colors.colors(generator.surface.minecraft_biome_at(&col, MIN_Y));
     out.grass.push(land[0]);
@@ -513,6 +601,18 @@ fn pad4(out: &mut Vec<u8>, fill: u8) {
     while !out.len().is_multiple_of(4) {
         out.push(fill);
     }
+}
+
+/// A file path sent as the hex of its UTF-8 bytes.
+pub fn hex_path(hex: &str) -> Option<PathBuf> {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok().map(PathBuf::from)
 }
 
 fn pack(
@@ -527,7 +627,14 @@ fn pack(
     let mut head = serde_json::to_vec(header).expect("header serialises");
     pad4(&mut head, b' ');
     let mut out = Vec::with_capacity(
-        8 + head.len() + columns.len() * 4 + water.len() + voxels.len() * 2 + 4 + states.len() * 4 + quads.len() * 4 + atlas.len(),
+        8 + head.len()
+            + columns.len() * 4
+            + water.len()
+            + voxels.len() * 2
+            + 4
+            + states.len() * 4
+            + quads.len() * 4
+            + atlas.len(),
     );
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&(head.len() as u32).to_le_bytes());
@@ -572,7 +679,11 @@ pub(crate) mod tests {
         let n = |k: &str| header[k].as_u64().unwrap() as usize;
         let side = n("side");
         let mut at = 8 + len;
-        let u32s = |b: &[u8]| b.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect::<Vec<_>>();
+        let u32s = |b: &[u8]| {
+            b.chunks_exact(4)
+                .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+                .collect::<Vec<_>>()
+        };
         let columns = u32s(&bytes[at..at + 16 * side * side]);
         at += 20 * side * side;
         let voxels = bytes[at..at + 2 * n("voxels")]
@@ -662,6 +773,19 @@ pub(crate) mod tests {
             assert!(q[3] < tiles);
             assert!(q[0..3].iter().all(|c| (-0.5..=1.5).contains(c)));
         }
-        eprintln!("{} voxels, {states} states, {water_tops} water tops", d.voxels.len());
+        eprintln!(
+            "{} voxels, {states} states, {water_tops} water tops",
+            d.voxels.len()
+        );
+    }
+
+    #[test]
+    fn paths_come_back_from_hex() {
+        let path = "C:\\Users\\Фёдор\\карта 1.png";
+        let hex: String = path.bytes().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex_path(&hex), Some(PathBuf::from(path)));
+        assert_eq!(hex_path("4"), None);
+        assert_eq!(hex_path("zz"), None);
+        assert_eq!(hex_path(""), None);
     }
 }

@@ -22,8 +22,14 @@ pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
     let px = &buf[..info.buffer_size()];
     let rgba = match info.color_type {
         png::ColorType::Rgba => px.to_vec(),
-        png::ColorType::Rgb => px.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::GrayscaleAlpha => px.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Rgb => px
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => px
+            .chunks_exact(2)
+            .flat_map(|p| [p[0], p[0], p[0], p[1]])
+            .collect(),
         png::ColorType::Grayscale => px.iter().flat_map(|&g| [g, g, g, 255]).collect(),
         png::ColorType::Indexed => return None,
     };
@@ -67,10 +73,19 @@ impl Texture {
                 } else {
                     hash(x / 2 + 31 * (y / 2), seed) as f32 / u32::MAX as f32
                 };
-                let keep = if blades { cell > 1.0 - coverage } else { cell < coverage };
+                let keep = if blades {
+                    cell > 1.0 - coverage
+                } else {
+                    cell < coverage
+                };
                 let shade = 0.8 + 0.4 * (hash(x + 16 * y, seed ^ 0x9e37) as f32 / u32::MAX as f32);
                 let ch = |c: u32| ((c & 0xFF) as f32 * shade).min(255.0) as u8;
-                rgba.extend_from_slice(&[ch(rgb >> 16), ch(rgb >> 8), ch(rgb), if keep { 255 } else { 0 }]);
+                rgba.extend_from_slice(&[
+                    ch(rgb >> 16),
+                    ch(rgb >> 8),
+                    ch(rgb),
+                    if keep { 255 } else { 0 },
+                ]);
             }
         }
         Texture {
@@ -92,8 +107,14 @@ impl Texture {
         for y in 0..size {
             for x in 0..size {
                 let (x0, x1) = (x * self.width / size, ((x + 1) * self.width).div_ceil(size));
-                let (y0, y1) = (y * self.height / size, ((y + 1) * self.height).div_ceil(size));
-                let (x1, y1) = (x1.max(x0 + 1).min(self.width), y1.max(y0 + 1).min(self.height));
+                let (y0, y1) = (
+                    y * self.height / size,
+                    ((y + 1) * self.height).div_ceil(size),
+                );
+                let (x1, y1) = (
+                    x1.max(x0 + 1).min(self.width),
+                    y1.max(y0 + 1).min(self.height),
+                );
                 let mut sum = [0u32; 4];
                 let mut solid = 0;
                 let mut count = 0;
@@ -119,7 +140,11 @@ impl Texture {
                         (sum[0] / solid) as u8,
                         (sum[1] / solid) as u8,
                         (sum[2] / solid) as u8,
-                        if self.opaque() { (sum[3] / count) as u8 } else { a },
+                        if self.opaque() {
+                            (sum[3] / count) as u8
+                        } else {
+                            a
+                        },
                     ]);
                 }
             }
@@ -169,7 +194,9 @@ pub(crate) mod tests {
 
     #[test]
     fn decodes_and_resamples() {
-        let px: Vec<u8> = (0..4).flat_map(|i| [i * 60, 0, 0, if i == 3 { 0 } else { 255 }]).collect();
+        let px: Vec<u8> = (0..4)
+            .flat_map(|i| [i * 60, 0, 0, if i == 3 { 0 } else { 255 }])
+            .collect();
         let t = decode_png(&png(2, 2, &px)).unwrap();
         assert_eq!((t.width, t.height), (2, 2));
         assert_eq!(t.rgba, px);

@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app } from '../lib/app.svelte';
+  import { render } from '../lib/render/state.svelte';
   import { PreviewScene } from '../lib/scene3d';
+  import RenderView from './RenderView.svelte';
 
   let canvas: HTMLCanvasElement;
   let scene = $state.raw<PreviewScene | null>(null);
@@ -43,20 +45,32 @@
 
 <div class="viewport" data-testid="view-3d">
   <canvas bind:this={canvas}></canvas>
+  {#if render.mode === 'render'}<RenderView />{/if}
 
   <div class="toolbar">
-    <button class="btn small" onclick={() => scene?.resetCamera()} title="Look at the whole map">Reset view</button>
-    <span class="segmented" title="Vertical scale">
-      {#each HEIGHTS as h (h)}
-        <button class:on={app.ui.exaggeration === h} onclick={() => (app.ui.exaggeration = h)}>×{h}</button>
+    <span class="segmented" title="Quick preview, or a picture lit like the game">
+      {#each ['preview', 'render'] as const as m (m)}
+        <button class:on={render.mode === m} onclick={() => ((render.mode = m), render.remember())} data-testid="view-mode-{m}"
+          >{m === 'preview' ? 'Preview' : 'Render'}</button
+        >
       {/each}
     </span>
-    <label class="check"><input type="checkbox" bind:checked={app.ui.trees3d} /> Trees</label>
-    <label class="check"><input type="checkbox" bind:checked={app.ui.water3d} /> Water</label>
-    <label class="check"><input type="checkbox" bind:checked={app.ui.shadows} /> Shadows</label>
+    {#if render.mode === 'preview'}
+      <button class="btn small" onclick={() => scene?.resetCamera()} title="Look at the whole map">Reset view</button>
+      <span class="segmented" title="Vertical scale">
+        {#each HEIGHTS as h (h)}
+          <button class:on={app.ui.exaggeration === h} onclick={() => (app.ui.exaggeration = h)}>×{h}</button>
+        {/each}
+      </span>
+      <label class="check"><input type="checkbox" bind:checked={app.ui.trees3d} /> Trees</label>
+      <label class="check"><input type="checkbox" bind:checked={app.ui.water3d} /> Water</label>
+      <label class="check"><input type="checkbox" bind:checked={app.ui.shadows} /> Shadows</label>
+    {/if}
   </div>
 
-  <div class="help">Drag to turn · right-drag to move · wheel to zoom</div>
+  {#if render.mode === 'preview'}
+    <div class="help">Drag to turn · right-drag to move · wheel to zoom</div>
+  {/if}
 
   {#if failed}
     <div class="overlay">

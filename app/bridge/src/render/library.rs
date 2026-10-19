@@ -34,7 +34,11 @@ impl CatalogFace {
     }
 
     fn tint(&self) -> Tint {
-        match self.tint.as_deref().and_then(|t| u32::from_str_radix(t, 16).ok()) {
+        match self
+            .tint
+            .as_deref()
+            .and_then(|t| u32::from_str_radix(t, 16).ok())
+        {
             Some(t) => Tint::from_catalog(t),
             None => Tint::None,
         }
@@ -153,7 +157,10 @@ impl Library {
         let t = if let Some(rest) = key.strip_prefix('#') {
             let mut parts = rest.split(':');
             let kind = parts.next().unwrap_or("");
-            let rgb = parts.next().and_then(|p| u32::from_str_radix(p, 16).ok()).unwrap_or(0x808080);
+            let rgb = parts
+                .next()
+                .and_then(|p| u32::from_str_radix(p, 16).ok())
+                .unwrap_or(0x808080);
             let coverage = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0.5);
             Some(Arc::new(match kind {
                 "leaves" => Texture::speckled(rgb, coverage, false, rgb),
@@ -161,7 +168,11 @@ impl Library {
                 _ => Texture::solid(rgb),
             }))
         } else {
-            let t = self.assets.as_ref().and_then(|a| Texture::load(a, key)).map(Arc::new);
+            let t = self
+                .assets
+                .as_ref()
+                .and_then(|a| Texture::load(a, key))
+                .map(Arc::new);
             if t.is_some() {
                 self.stats.textures += 1;
             } else {
@@ -213,7 +224,12 @@ impl Library {
                 .into_iter()
                 .flatten()
                 .find(|f| f.tint_index == Some(index))
-                .or_else(|| [&info.top, &info.side].into_iter().flatten().find(|f| f.tint.is_some()))
+                .or_else(|| {
+                    [&info.top, &info.side]
+                        .into_iter()
+                        .flatten()
+                        .find(|f| f.tint.is_some())
+                })
                 .map(CatalogFace::tint)
                 .unwrap_or(Tint::None)
         };
@@ -235,7 +251,11 @@ impl Library {
                     let faces = slot
                         .into_iter()
                         .map(|quad| {
-                            let tint = if quad.tint >= 0 { tint_for(quad.tint) } else { Tint::None };
+                            let tint = if quad.tint >= 0 {
+                                tint_for(quad.tint)
+                            } else {
+                                Tint::None
+                            };
                             Face { quad, tint }
                         })
                         .collect();
@@ -276,13 +296,22 @@ impl Library {
                 *slot = sorted
                     .into_iter()
                     .map(|q| {
-                        let tint = slot.iter().find(|f| f.quad == q).map(|f| f.tint).unwrap_or(Tint::None);
+                        let tint = slot
+                            .iter()
+                            .find(|f| f.quad == q)
+                            .map(|f| f.tint)
+                            .unwrap_or(Tint::None);
                         Face { quad: q, tint }
                     })
                     .collect();
             }
         }
-        if let Some(t) = block.slots.first().and_then(|s| s.first()).and_then(|f| self.texture(&f.quad.texture)) {
+        if let Some(t) = block
+            .slots
+            .first()
+            .and_then(|s| s.first())
+            .and_then(|f| self.texture(&f.quad.texture))
+        {
             block.color = t.average();
         }
         block
@@ -304,12 +333,18 @@ impl Library {
         let opaque = info.opaque.unwrap_or(true);
         let coverage = side.coverage.unwrap_or(1.0);
         let plant = !leaves
-            && (is("PlantsDense") || is("Shrub") || is("Sapling") || is("class_2261") || (!opaque && coverage < 0.9));
+            && (is("PlantsDense")
+                || is("Shrub")
+                || is("Sapling")
+                || is("class_2261")
+                || (!opaque && coverage < 0.9));
         let pick = |f: &CatalogFace, kind: &str| -> String {
             match (&f.texture, self.assets.as_ref()) {
                 (Some(t), Some(a)) if a.has(&texture_path(t)) => t.clone(),
                 _ => match kind {
-                    "leaves" | "plant" => format!("#{kind}:{:06x}:{:.2}", f.rgb(), f.coverage.unwrap_or(0.5)),
+                    "leaves" | "plant" => {
+                        format!("#{kind}:{:06x}:{:.2}", f.rgb(), f.coverage.unwrap_or(0.5))
+                    }
                     _ => format!("#solid:{:06x}", f.rgb()),
                 },
             }
@@ -327,46 +362,53 @@ impl Library {
         if plant {
             return cross(&t_side, tint_side);
         }
-        let boxes: Vec<([f32; 3], [f32; 3])> = if is("BranchLarge") || is("Branch") || is("BranchSmall") {
-            let r = if is("BranchLarge") { 5.0 } else if is("BranchSmall") { 2.0 } else { 3.5 };
-            let (lo, hi) = (8.0 - r, 8.0 + r);
-            let mut b = vec![([lo, 0.0, lo], [hi, 16.0, hi])];
-            let on = |k: &str| state.get(k) == Some("true");
-            if on("north") {
-                b.push(([lo, lo, 0.0], [hi, hi, lo]));
-            }
-            if on("south") {
-                b.push(([lo, lo, hi], [hi, hi, 16.0]));
-            }
-            if on("west") {
-                b.push(([0.0, lo, lo], [lo, hi, hi]));
-            }
-            if on("east") {
-                b.push(([hi, lo, lo], [16.0, hi, hi]));
-            }
-            b
-        } else if is("LogPillar") || is("Stump") || is("Pillar") {
-            let r = 2.0 + num("layer").unwrap_or(3.0) * 1.2;
-            vec![([8.0 - r, 0.0, 8.0 - r], [8.0 + r, 16.0, 8.0 + r])]
-        } else if let (Some(layers), false) = (num("layers"), is("Slab") || is("class_2482")) {
-            vec![([0.0; 3], [16.0, 2.0 * layers, 16.0])]
-        } else if let Some(t) = state.get("type").filter(|_| is("Slab") || is("class_2482")) {
-            match t {
-                "top" => vec![([0.0, 8.0, 0.0], [16.0; 3])],
-                "double" => vec![([0.0; 3], [16.0; 3])],
-                _ => vec![([0.0; 3], [16.0, 8.0, 16.0])],
-            }
-        } else if let (Some(facing), true) = (state.get("facing"), is("VerticalSlab")) {
-            let t = 4.0 * num("layer").unwrap_or(2.0);
-            match facing {
-                "north" => vec![([0.0; 3], [16.0, 16.0, t])],
-                "south" => vec![([0.0, 0.0, 16.0 - t], [16.0; 3])],
-                "west" => vec![([0.0; 3], [t, 16.0, 16.0])],
-                _ => vec![([16.0 - t, 0.0, 0.0], [16.0; 3])],
-            }
-        } else {
-            vec![([0.0; 3], [16.0; 3])]
-        };
+        let boxes: Vec<([f32; 3], [f32; 3])> =
+            if is("BranchLarge") || is("Branch") || is("BranchSmall") {
+                let r = if is("BranchLarge") {
+                    5.0
+                } else if is("BranchSmall") {
+                    2.0
+                } else {
+                    3.5
+                };
+                let (lo, hi) = (8.0 - r, 8.0 + r);
+                let mut b = vec![([lo, 0.0, lo], [hi, 16.0, hi])];
+                let on = |k: &str| state.get(k) == Some("true");
+                if on("north") {
+                    b.push(([lo, lo, 0.0], [hi, hi, lo]));
+                }
+                if on("south") {
+                    b.push(([lo, lo, hi], [hi, hi, 16.0]));
+                }
+                if on("west") {
+                    b.push(([0.0, lo, lo], [lo, hi, hi]));
+                }
+                if on("east") {
+                    b.push(([hi, lo, lo], [16.0, hi, hi]));
+                }
+                b
+            } else if is("LogPillar") || is("Stump") || is("Pillar") {
+                let r = 2.0 + num("layer").unwrap_or(3.0) * 1.2;
+                vec![([8.0 - r, 0.0, 8.0 - r], [8.0 + r, 16.0, 8.0 + r])]
+            } else if let (Some(layers), false) = (num("layers"), is("Slab") || is("class_2482")) {
+                vec![([0.0; 3], [16.0, 2.0 * layers, 16.0])]
+            } else if let Some(t) = state.get("type").filter(|_| is("Slab") || is("class_2482")) {
+                match t {
+                    "top" => vec![([0.0, 8.0, 0.0], [16.0; 3])],
+                    "double" => vec![([0.0; 3], [16.0; 3])],
+                    _ => vec![([0.0; 3], [16.0, 8.0, 16.0])],
+                }
+            } else if let (Some(facing), true) = (state.get("facing"), is("VerticalSlab")) {
+                let t = 4.0 * num("layer").unwrap_or(2.0);
+                match facing {
+                    "north" => vec![([0.0; 3], [16.0, 16.0, t])],
+                    "south" => vec![([0.0, 0.0, 16.0 - t], [16.0; 3])],
+                    "west" => vec![([0.0; 3], [t, 16.0, 16.0])],
+                    _ => vec![([16.0 - t, 0.0, 0.0], [16.0; 3])],
+                }
+            } else {
+                vec![([0.0; 3], [16.0; 3])]
+            };
         let mut faces = Vec::new();
         for (from, to) in boxes {
             for dir in Dir::ALL {
@@ -393,12 +435,36 @@ fn texture_path(id: &str) -> String {
 fn box_face(dir: Dir, from: [f32; 3], to: [f32; 3], texture: &str) -> Quad {
     let s = 1.0 / 16.0;
     let corners = |f: [f32; 3], t: [f32; 3]| match dir {
-        Dir::Down => ([f[0], f[1], t[2]], [t[0] - f[0], 0.0, 0.0], [0.0, 0.0, f[2] - t[2]]),
-        Dir::Up => ([f[0], t[1], f[2]], [t[0] - f[0], 0.0, 0.0], [0.0, 0.0, t[2] - f[2]]),
-        Dir::North => ([t[0], t[1], f[2]], [f[0] - t[0], 0.0, 0.0], [0.0, f[1] - t[1], 0.0]),
-        Dir::South => ([f[0], t[1], t[2]], [t[0] - f[0], 0.0, 0.0], [0.0, f[1] - t[1], 0.0]),
-        Dir::West => ([f[0], t[1], f[2]], [0.0, 0.0, t[2] - f[2]], [0.0, f[1] - t[1], 0.0]),
-        Dir::East => ([t[0], t[1], t[2]], [0.0, 0.0, f[2] - t[2]], [0.0, f[1] - t[1], 0.0]),
+        Dir::Down => (
+            [f[0], f[1], t[2]],
+            [t[0] - f[0], 0.0, 0.0],
+            [0.0, 0.0, f[2] - t[2]],
+        ),
+        Dir::Up => (
+            [f[0], t[1], f[2]],
+            [t[0] - f[0], 0.0, 0.0],
+            [0.0, 0.0, t[2] - f[2]],
+        ),
+        Dir::North => (
+            [t[0], t[1], f[2]],
+            [f[0] - t[0], 0.0, 0.0],
+            [0.0, f[1] - t[1], 0.0],
+        ),
+        Dir::South => (
+            [f[0], t[1], t[2]],
+            [t[0] - f[0], 0.0, 0.0],
+            [0.0, f[1] - t[1], 0.0],
+        ),
+        Dir::West => (
+            [f[0], t[1], f[2]],
+            [0.0, 0.0, t[2] - f[2]],
+            [0.0, f[1] - t[1], 0.0],
+        ),
+        Dir::East => (
+            [t[0], t[1], t[2]],
+            [0.0, 0.0, f[2] - t[2]],
+            [0.0, f[1] - t[1], 0.0],
+        ),
     };
     let (o, u, v) = corners(from, to);
     let a = dir.planar_uv(o);
@@ -407,7 +473,11 @@ fn box_face(dir: Dir, from: [f32; 3], to: [f32; 3], texture: &str) -> Quad {
         o: o.map(|c| c * s),
         u: u.map(|c| c * s),
         v: v.map(|c| c * s),
-        uv: [[a[0] * s, a[1] * s], [(b[0] - a[0]) * s, 0.0], [0.0, (b[1] - a[1]) * s]],
+        uv: [
+            [a[0] * s, a[1] * s],
+            [(b[0] - a[0]) * s, 0.0],
+            [0.0, (b[1] - a[1]) * s],
+        ],
         texture: texture.to_string(),
         tint: -1,
     }
@@ -447,7 +517,10 @@ mod tests {
             let n = q.normal();
             assert_eq!(Dir::of(n), Some(dir), "{dir:?}");
         }
-        let full: Vec<Quad> = Dir::ALL.iter().map(|&d| box_face(d, [0.0; 3], [16.0; 3], "#x")).collect();
+        let full: Vec<Quad> = Dir::ALL
+            .iter()
+            .map(|&d| box_face(d, [0.0; 3], [16.0; 3], "#x"))
+            .collect();
         assert!(is_full_cube(&full));
         for f in cross("#x", Tint::Grass) {
             assert!(f.quad.normal()[1].abs() < 1e-6);

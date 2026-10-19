@@ -66,6 +66,12 @@ struct ConfigArgs {
     config: AppConfig,
 }
 
+#[derive(Deserialize)]
+struct RenderArgs {
+    settings: WorldSettings,
+    request: vistaforge_bridge::render::SceneRequest,
+}
+
 enum Reply {
     Json(serde_json::Value),
     Bytes(Vec<u8>),
@@ -87,6 +93,14 @@ fn handle(state: &Arc<State>, command: &str, body: &str) -> Result<Reply> {
         "preview" => {
             let a: PreviewArgs = args(body)?;
             Ok(Reply::Bytes(state.bridge.preview(&a.settings, a.res)?))
+        }
+        "render_scene" => {
+            let a: RenderArgs = args(body)?;
+            Ok(Reply::Bytes(state.bridge.render_scene(
+                &a.settings,
+                &a.request,
+                &|_, _| {},
+            )?))
         }
         "world_exists" => {
             let a: ExistsArgs = args(body)?;

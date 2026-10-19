@@ -162,6 +162,7 @@ layout(location = 3) out vec4 oGuide;
 
 const float PI = 3.14159265;
 const float FAR = 1e6;
+const float SKY_DEPTH = 6e4;
 const int SURF = 1;
 const int WENTER = 2;
 const int WEXIT = 3;
@@ -646,7 +647,8 @@ void main() {
     float segEnd = any ? h.t : uFogFar;
     if (!guided) {
       guided = true;
-      guide = any ? vec4(h.n, h.t) : vec4(-rd, 1e5);
+      // Half floats end at 65504.
+      guide = any ? vec4(h.n, min(h.t, SKY_DEPTH)) : vec4(-rd, SKY_DEPTH);
     }
     // Fog along the way: light scattered towards us from one point of it, and what it dims.
     if (!inWater && uFogDensity > 0.0) {
