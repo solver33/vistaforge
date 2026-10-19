@@ -23,7 +23,7 @@
     if (app.ready && app.catalog) app.schedulePreview();
   });
 
-  // Every change becomes an undo step once it settles.
+  // Every change becomes an undo step once it settles, and a drag once the mouse button comes up.
   $effect(() => {
     void app.settingsJson;
     if (app.ready) app.commitSoon();
@@ -57,7 +57,13 @@
   }
 </script>
 
-<svelte:window onkeydown={onKeyDown} />
+<svelte:window
+  onkeydown={onKeyDown}
+  onpointerdown={() => app.holdCommits()}
+  onpointerup={() => app.releaseCommits()}
+  onpointercancel={() => app.releaseCommits()}
+  onblur={() => app.releaseCommits()}
+/>
 
 {#if app.startError}
   <div class="splash">
