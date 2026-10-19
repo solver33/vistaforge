@@ -8,9 +8,33 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { heightPyramid, medianTop, type Scene } from './scene';
 import { fogDensity, sunDirection, type RenderSettings } from './settings';
-import { ATROUS_FS, COMPOSITE_FS, FULLSCREEN_VS, PREPARE_FS, PRESENT_FS, QUICK_FS, SKY_FS, TRACE_FS } from './shaders';
+import {
+  ATROUS_FS,
+  BLOOM_DOWN_FS,
+  BLOOM_UP_FS,
+  COMPOSITE_FS,
+  FINISH_FS,
+  FULLSCREEN_VS,
+  NOISE_FS,
+  PREPARE_FS,
+  PRESENT_FS,
+  QUICK_FS,
+  SKY_FS,
+  TRACE_FS,
+} from './shaders';
 import { Pacer } from './pacer';
-import { luminance, skyLight, sunlight, SKY_GAIN, SUN_DIRECT, SUN_POWER, SUN_RADIUS, type Vec3 } from './sky';
+import {
+  luminance,
+  skyLight,
+  sunlight,
+  MOON_GAIN,
+  MOON_TINT,
+  SKY_GAIN,
+  SUN_DIRECT,
+  SUN_POWER,
+  SUN_RADIUS,
+  type Vec3,
+} from './sky';
 
 export interface TracerStatus {
   samples: number;
@@ -51,6 +75,18 @@ const FADE_FULL = 6;
 const FADE_FULL_RAW = 16;
 /** The shortest fade from the quick view to the render. */
 const FADE_MS = 300;
+/** Side of the cloud noise, in texels. */
+const NOISE_N = 64;
+/** Halvings of the picture for the glow, from a quarter of its size. */
+const BLOOM_LEVELS = 6;
+/** Share of the light spread into the glow at the Glow setting's top. */
+const GLOW_MAX = 0.12;
+/** The soft clouds: blocks across one tile of their noise at Size 1, and extinction per block
+ * where they are thickest. */
+const CLOUD_TILE = 500;
+const CLOUD_SIGMA = 0.35;
+/** The noise texture's unit, clear of the 2D ones. */
+const NOISE_UNIT = 8;
 
 /** Times the graphics card has dropped the render in this window: each halves the pixels. */
 let losses = 0;
@@ -59,7 +95,7 @@ type Uniforms = Map<string, WebGLUniformLocation | null>;
 
 /** A batch of work handed to the graphics card: what it was, and how to tell it is done. */
 interface Job {
-  kind: 'quick' | 'trace' | 'develop';
+  kind: 'quick' | 'trace' | 'develop' | 'noise';
   units: number;
   at: number;
   sync: WebGLSync | null;
@@ -103,7 +139,23 @@ export class PathTracer {
   private readonly floatBlend: boolean;
   private readonly maxTexture: number;
   private readonly vao: WebGLVertexArrayObject;
-  private readonly programs: Record<'trace' | 'quick' | 'sky' | 'prepare' | 'atrous' | 'composite' | 'present', Program>;
+  private readonly programs: Record<
+    | 'trace'
+    | 'quick'
+    | 'sky'
+    | 'prepare'
+    | 'atrous'
+    | 'composite'
+    | 'present'
+    | 'noise'
+    | 'bloomDown'
+    | 'bloomUp'
+    | 'finish',
+    Program
+  >;
+  /** Tiling 3D noise for the soft clouds and the Milky Way, made on the card when first needed. */
+  private readonly noise: WebGLTexture;
+  private noiseReady = false;
   private ready = false;
 
   private scene: Scene | null = null;
@@ -119,6 +171,10 @@ export class PathTracer {
   private ambient: Vec3 = [0, 0, 0];
   private skyUp: Vec3 = [0, 0, 0];
   private bounce: Vec3 = [0, 0, 0];
+  /** The sky shader's lights: the sun's power, or the moon's (tinted), the other zero. */
+  private skySun = 0;
+  private skyMoon: Vec3 = [0, 0, 0];
+  private stars = 0;
   private baseExposure = 1;
 
   private sky: Target;
@@ -128,6 +184,10 @@ export class PathTracer {
   private pingB: Target | null = null;
   private out: Target | null = null;
   private quick: Target | null = null;
+  /** The light before tone mapping, and the glow made from it, halving in size. */
+  private hdr: Target | null = null;
+  private bloom: Target[] = [];
+  private bloomSize: [number, number][] = [];
   private width = 0;
   private height = 0;
 
@@ -204,7 +264,19 @@ export class PathTracer {
       atrous: this.program(ATROUS_FS),
       composite: this.program(COMPOSITE_FS),
       present: this.program(PRESENT_FS),
+      noise: this.program(NOISE_FS),
+      bloomDown: this.program(BLOOM_DOWN_FS),
+      bloomUp: this.program(BLOOM_UP_FS),
+      finish: this.program(FINISH_FS),
     };
+    this.noise = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_3D, this.noise);
+    gl.texStorage3D(gl.TEXTURE_3D, 1, gl.RGBA8, NOISE_N, NOISE_N, NOISE_N);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R])
+      gl.texParameteri(gl.TEXTURE_3D, w, gl.REPEAT);
+    gl.bindTexture(gl.TEXTURE_3D, null);
     this.sky = this.target(SKY_W, SKY_H, [gl.RGBA16F], gl.LINEAR);
     gl.bindTexture(gl.TEXTURE_2D, this.sky.textures[0]);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -236,7 +308,20 @@ export class PathTracer {
     if (this.lost) return;
     const gl = this.gl;
     this.dropScene();
-    for (const t of [this.sky, this.accum, this.prep, this.pingA, this.pingB, this.out, this.quick]) this.dropTarget(t);
+    for (const t of [
+      this.sky,
+      this.accum,
+      this.prep,
+      this.pingA,
+      this.pingB,
+      this.out,
+      this.quick,
+      this.hdr,
+      ...this.bloom,
+    ]) {
+      this.dropTarget(t);
+    }
+    gl.deleteTexture(this.noise);
     for (const p of Object.values(this.programs)) gl.deleteProgram(p.program);
     gl.deleteVertexArray(this.vao);
     if (!keepContext) gl.getExtension('WEBGL_lose_context')?.loseContext();
@@ -297,13 +382,13 @@ export class PathTracer {
     this.settings = { ...settings };
     const changed = (Object.keys(settings) as (keyof RenderSettings)[]).filter((k) => before[k] !== settings[k]);
     if (changed.length === 0) return;
-    const light = ['sunAzimuth', 'sunElevation', 'sunBrightness', 'skyBrightness'];
+    const light = ['sunAzimuth', 'sunElevation', 'night', 'sunBrightness', 'skyBrightness'];
     if (changed.some((k) => light.includes(k))) this.updateLight();
     if (changed.some((k) => k === 'fov')) {
       this.camera.fov = settings.fov;
       this.camera.updateProjectionMatrix();
     }
-    const display = ['exposure', 'denoise'];
+    const display = ['exposure', 'denoise', 'glow', 'vignette'];
     if (changed.every((k) => display.includes(k))) {
       this.pictureDirty = true;
       // The quick view has the exposure in it.
@@ -415,6 +500,14 @@ export class PathTracer {
   /** Hands the graphics card the next piece of work, if there is any. */
   private nextJob(now: number): void {
     const all = this.width * this.height;
+    if (!this.noiseReady && this.needsNoise()) {
+      this.begin('noise', 1, now);
+      this.makeNoise();
+      this.end();
+      // Clouds and stars that were left out until now.
+      this.restart();
+      return;
+    }
     if (this.quickDirty) {
       // While moving, as much of the quick view as fits in QUICK_MS; once still, a few times that.
       const pixels = this.moving
@@ -555,14 +648,29 @@ export class PathTracer {
   private updateLight(): void {
     const s = this.settings;
     this.sun = sunDirection(s.sunAzimuth, s.sunElevation);
-    const sunE = sunlight(this.sun).map((c) => c * SUN_DIRECT) as Vec3;
+    // At night the light is the moon, where the sun would be, dimmer and bluer.
+    const tint: Vec3 = s.night ? MOON_TINT : [1, 1, 1];
+    const gain = s.night ? MOON_GAIN : 1;
+    const sunE = sunlight(this.sun).map((c, i) => c * SUN_DIRECT * gain * tint[i]) as Vec3;
     this.sunE = sunE.map((c) => c * s.sunBrightness) as Vec3;
-    const sky = skyLight(this.sun, SUN_POWER * SKY_GAIN);
+    const raw = skyLight(this.sun, SUN_POWER * SKY_GAIN * gain);
+    const sky = {
+      ambient: raw.ambient.map((c, i) => c * tint[i]) as Vec3,
+      irradiance: raw.irradiance.map((c, i) => c * tint[i]) as Vec3,
+    };
+    this.skySun = s.night ? 0 : SUN_POWER * SKY_GAIN * s.skyBrightness;
+    // The night sky drawn darker than the moon's light on the land, as in a night photo, so the
+    // stars stand out.
+    this.skyMoon = s.night
+      ? (tint.map((c) => c * SUN_POWER * SKY_GAIN * gain * s.skyBrightness * 0.5) as Vec3)
+      : [0, 0, 0];
+    // Stars at night, and the first few at dusk.
+    this.stars = s.night ? 1 : Math.min(1, Math.max(0, (-s.sunElevation - 2) / 6)) * 0.4;
     this.ambient = sky.ambient.map((c) => c * s.skyBrightness) as Vec3;
     // Expose for the light on flat ground, as a camera would, but only partly: sunsets stay
     // darker than noon. The brightness sliders are left to change the picture.
     const ground = luminance(sunE) * Math.max(this.sun[1], 0) + luminance(sky.irradiance);
-    this.baseExposure = Math.min(12, 1.3 * Math.pow(6 / Math.max(ground, 0.02), 0.6));
+    this.baseExposure = Math.min(12, 1.3 * Math.pow(6 / Math.max(ground, 0.02), 0.6)) * (s.night ? 0.6 : 1);
     // For the quick view: the sky's light on flat ground, and what ground of a typical
     // brightness sends back up onto the undersides.
     this.skyUp = sky.irradiance.map((c) => (c * s.skyBrightness) / Math.PI) as Vec3;
@@ -579,7 +687,9 @@ export class PathTracer {
     gl.useProgram(p.program);
     gl.uniform3fv(this.u(p, 'uSunDir'), this.sun);
     gl.uniform2f(this.u(p, 'uSize'), SKY_W, SKY_H);
-    gl.uniform1f(this.u(p, 'uSunPower'), SUN_POWER * SKY_GAIN * this.settings.skyBrightness);
+    gl.uniform1f(this.u(p, 'uSunPower'), this.skySun);
+    gl.uniform3fv(this.u(p, 'uMoonDir'), this.sun);
+    gl.uniform3fv(this.u(p, 'uMoonPower'), this.skyMoon);
     this.draw();
     this.skyDirty = false;
   }
@@ -609,7 +719,9 @@ export class PathTracer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     const gl = this.gl;
-    for (const t of [this.accum, this.prep, this.pingA, this.pingB, this.out, this.quick]) this.dropTarget(t);
+    for (const t of [this.accum, this.prep, this.pingA, this.pingB, this.out, this.quick, this.hdr, ...this.bloom]) {
+      this.dropTarget(t);
+    }
     const acc = this.floatBlend ? gl.RGBA32F : gl.RGBA16F;
     this.accum = this.target(w, h, [acc, acc, acc, acc], gl.NEAREST);
     this.prep = this.target(w, h, [gl.RGBA16F, gl.RGBA16F, gl.RGBA16F], gl.NEAREST);
@@ -618,6 +730,17 @@ export class PathTracer {
     this.pingB = this.attach([this.prep.textures[0], this.prep.textures[1]]);
     this.out = this.target(w, h, [gl.RGBA8], gl.LINEAR);
     this.quick = this.target(w, h, [gl.RGBA8], gl.LINEAR);
+    this.hdr = this.target(w, h, [gl.RGBA16F], gl.LINEAR);
+    this.bloom = [];
+    this.bloomSize = [];
+    let bw = Math.ceil(w / 4);
+    let bh = Math.ceil(h / 4);
+    for (let k = 0; k < BLOOM_LEVELS && bw >= 2 && bh >= 2; k++) {
+      this.bloom.push(this.target(bw, bh, [gl.RGBA16F], gl.LINEAR));
+      this.bloomSize.push([bw, bh]);
+      bw = Math.ceil(bw / 2);
+      bh = Math.ceil(bh / 2);
+    }
     this.quickW = 1;
     this.quickH = 1;
     this.restart();
@@ -650,7 +773,7 @@ export class PathTracer {
     const p = this.programs.quick;
     const w = Math.max(1, Math.round(this.width * share));
     const h = Math.max(1, Math.round(this.height * share));
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.quick!.fbo);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.hdr!.fbo);
     gl.viewport(0, 0, w, h);
     gl.disable(gl.BLEND);
     gl.useProgram(p.program);
@@ -660,6 +783,7 @@ export class PathTracer {
     gl.uniform3fv(this.u(p, 'uBounce'), this.bounce);
     gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
     this.draw();
+    this.finish(this.quick!, w, h);
     this.quickW = w;
     this.quickH = h;
     this.quickDirty = false;
@@ -682,6 +806,9 @@ export class PathTracer {
       ['uSky', this.sky.textures[0]],
     ];
     units.forEach(([name, t], i) => this.bind(p, name, i, t));
+    gl.activeTexture(gl.TEXTURE0 + NOISE_UNIT);
+    gl.bindTexture(gl.TEXTURE_3D, this.noise);
+    gl.uniform1i(this.u(p, 'uNoise'), NOISE_UNIT);
 
     const i = (name: string, v: number) => gl.uniform1i(this.u(p, name), v);
     const f = (name: string, v: number) => gl.uniform1f(this.u(p, name), v);
@@ -709,6 +836,7 @@ export class PathTracer {
     f('uAperture', st.aperture * 1.5);
     f('uFocus', Math.max(cam.position.distanceTo(this.controls.target), 0.5));
     gl.uniform2f(this.u(p, 'uRes'), resW, resH);
+    f('uPixelAngle', (2 * Math.tan((cam.fov * Math.PI) / 360)) / resH);
     gl.uniform1ui(this.u(p, 'uFrame'), this.seed >>> 0);
 
     v3('uSunDir', this.sun);
@@ -724,6 +852,116 @@ export class PathTracer {
     f('uWaves', st.waves);
     f('uCloudY', st.cloudHeight);
     f('uCloudCover', st.clouds);
+    const style = st.clouds <= 0 ? 0 : st.cloudStyle === 'blocky' ? 1 : this.noiseReady ? 2 : 0;
+    i('uCloudStyle', style);
+    f('uCloudTop', st.cloudHeight + Math.max(st.cloudThickness, 4));
+    f('uCloudScale', 1 / (CLOUD_TILE * Math.max(st.cloudSize, 0.1)));
+    f('uCloudSigma', CLOUD_SIGMA);
+    f('uCloudFar', Math.max(4000, Math.max(h.width, h.depth) * 4));
+    v3('uCloudAmbTop', this.skyUp);
+    v3('uCloudAmbBot', this.bounce);
+    f('uMoon', st.night ? 1 : 0);
+    f('uStars', this.noiseReady ? this.stars : 0);
+  }
+
+  private needsNoise(): boolean {
+    const st = this.settings;
+    return (st.clouds > 0 && st.cloudStyle === 'soft') || this.stars > 0;
+  }
+
+  /** The cloud noise, one layer at a time. */
+  private makeNoise(): void {
+    const gl = this.gl;
+    const p = this.programs.noise;
+    gl.activeTexture(gl.TEXTURE0 + NOISE_UNIT);
+    gl.bindTexture(gl.TEXTURE_3D, null);
+    const fbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, NOISE_N, NOISE_N);
+    gl.disable(gl.BLEND);
+    gl.useProgram(p.program);
+    gl.uniform1i(this.u(p, 'uN'), NOISE_N);
+    for (let z = 0; z < NOISE_N; z++) {
+      gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.noise, 0, z);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      gl.uniform1i(this.u(p, 'uLayer'), z);
+      this.draw();
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo);
+    this.noiseReady = true;
+  }
+
+  /** Spreads the light in the corner of `hdr` (w × h pixels) through the glow images; false
+   * when there is no glow. */
+  private spread(w: number, h: number): boolean {
+    if (this.settings.glow <= 0 || this.bloom.length === 0) return false;
+    const gl = this.gl;
+    const down = this.programs.bloomDown;
+    gl.disable(gl.BLEND);
+    gl.useProgram(down.program);
+    let src = this.hdr!.textures[0];
+    let sw = this.width;
+    let sh = this.height;
+    let scale = [w / this.width, h / this.height];
+    let max = [(w - 0.5) / this.width, (h - 0.5) / this.height];
+    this.bloom.forEach((t, k) => {
+      const [bw, bh] = this.bloomSize[k];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+      gl.viewport(0, 0, bw, bh);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      this.bind(down, 'uSrc', 0, src);
+      gl.uniform2f(this.u(down, 'uSrcSize'), sw, sh);
+      gl.uniform2f(this.u(down, 'uDstSize'), bw, bh);
+      gl.uniform2f(this.u(down, 'uUvScale'), scale[0], scale[1]);
+      gl.uniform2f(this.u(down, 'uUvMax'), max[0], max[1]);
+      gl.uniform1i(this.u(down, 'uFirst'), k === 0 ? 1 : 0);
+      this.draw();
+      src = t.textures[0];
+      sw = bw;
+      sh = bh;
+      scale = [1, 1];
+      max = [1 - 0.5 / bw, 1 - 0.5 / bh];
+    });
+    const up = this.programs.bloomUp;
+    gl.useProgram(up.program);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    for (let k = this.bloom.length - 2; k >= 0; k--) {
+      const [bw, bh] = this.bloomSize[k];
+      const [cw, ch] = this.bloomSize[k + 1];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloom[k].fbo);
+      gl.viewport(0, 0, bw, bh);
+      this.bind(up, 'uSrc', 0, this.bloom[k + 1].textures[0]);
+      gl.uniform2f(this.u(up, 'uSrcSize'), cw, ch);
+      gl.uniform2f(this.u(up, 'uDstSize'), bw, bh);
+      this.draw();
+    }
+    gl.disable(gl.BLEND);
+    return true;
+  }
+
+  /** The light in the corner of `hdr` (w × h pixels), with its glow, tone mapped into `to`. */
+  private finish(to: Target, w: number, h: number): void {
+    const gl = this.gl;
+    const glow = this.spread(w, h);
+    const p = this.programs.finish;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, to.fbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.BLEND);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    gl.useProgram(p.program);
+    this.bind(p, 'uHdr', 0, this.hdr!.textures[0]);
+    this.bind(p, 'uBloom', 1, glow ? this.bloom[0].textures[0] : this.hdr!.textures[0]);
+    gl.uniform2f(this.u(p, 'uOutSize'), w, h);
+    gl.uniform1f(this.u(p, 'uGlow'), glow ? GLOW_MAX * this.settings.glow : 0);
+    gl.uniform1f(this.u(p, 'uBloomNorm'), 1 / Math.max(this.bloom.length, 1));
+    gl.uniform1f(this.u(p, 'uVignette'), this.settings.vignette);
+    this.draw();
+    for (let u = 0; u < 2; u++) {
+      gl.activeTexture(gl.TEXTURE0 + u);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
   }
 
   private exposure(): number {
@@ -769,7 +1007,7 @@ export class PathTracer {
     }
 
     const cp = this.programs.composite;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.out!.fbo);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.hdr!.fbo);
     gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
     gl.useProgram(cp.program);
     this.bind(cp, 'uE', 0, e);
@@ -785,6 +1023,7 @@ export class PathTracer {
       gl.activeTexture(gl.TEXTURE0 + u);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
+    this.finish(this.out!, this.width, this.height);
   }
 
   /** The quick view and the render, faded by `mix`, onto the screen. */

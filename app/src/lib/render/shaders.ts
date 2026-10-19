@@ -11,6 +11,7 @@ precision highp float;
 precision highp int;
 precision highp usampler2D;
 precision highp sampler2D;
+precision highp sampler3D;
 `;
 
 export const FULLSCREEN_VS = /* glsl */ `#version 300 es
@@ -19,13 +20,17 @@ void main() { gl_Position = vec4(P[gl_VertexID], 0.0, 1.0); }
 `;
 
 /** Single scattering in a Rayleigh and Mie atmosphere (after Nishita), into a
- * latitude-longitude sky texture. Directions below the horizon fade to a dim haze. */
+ * latitude-longitude sky texture, lit by the sun and by the moon. Directions below the horizon
+ * fade to a dim haze. */
 export const SKY_FS =
   HEADER +
   /* glsl */ `
 uniform vec3 uSunDir;
 uniform vec2 uSize;
 uniform float uSunPower;
+uniform vec3 uMoonDir;
+/** Moonlight, tinted: zero by day. */
+uniform vec3 uMoonPower;
 out vec4 oColor;
 
 const float PI = 3.14159265;
@@ -69,6 +74,13 @@ vec3 atmosphere(vec3 r, vec3 pSun) {
     float odStepMie = exp(-iHeight / SH_MIE) * iStep;
     iOdRlh += odStepRlh;
     iOdMie += odStepMie;
+    // Where the planet stands between this point and the sun, its shadow: the dark band
+    // that climbs the sky at dusk.
+    vec2 g = sphere(iPos, pSun, R_PLANET);
+    if (g.x <= g.y && g.x > 0.0) {
+      iTime += iStep;
+      continue;
+    }
     float jStep = sphere(iPos, pSun, R_ATMOS).y / 8.0;
     float jTime = 0.0;
     float jOdRlh = 0.0;
@@ -85,7 +97,13 @@ vec3 atmosphere(vec3 r, vec3 pSun) {
     totalMie += odStepMie * attn;
     iTime += iStep;
   }
-  return uSunPower * (pRlh * K_RLH * totalRlh + pMie * K_MIE * totalMie);
+  return pRlh * K_RLH * totalRlh + pMie * K_MIE * totalMie;
+}
+
+vec3 light(vec3 r) {
+  vec3 c = uSunPower * atmosphere(r, uSunDir);
+  if (uMoonPower.b > 0.0) c += uMoonPower * atmosphere(r, uMoonDir);
+  return c;
 }
 
 void main() {
@@ -95,14 +113,83 @@ void main() {
   vec3 d = vec3(sin(theta) * cos(phi), cos(theta), sin(theta) * sin(phi));
   vec3 c;
   if (d.y >= 0.0) {
-    c = atmosphere(normalize(vec3(d.x, max(d.y, 0.002), d.z)), uSunDir);
+    c = light(normalize(vec3(d.x, max(d.y, 0.002), d.z)));
   } else {
-    vec3 h = atmosphere(normalize(vec3(d.x, 0.002, d.z)), uSunDir);
+    vec3 h = light(normalize(vec3(d.x, 0.002, d.z)));
     c = h * mix(1.0, 0.25, smoothstep(0.0, 0.35, -d.y));
   }
   // A faint night sky so the scene never goes fully black.
   c += vec3(0.0015, 0.002, 0.004);
   oColor = vec4(c, 1.0);
+}
+`;
+
+/** One layer of a 64³ tiling noise for the soft clouds: r is Perlin-Worley noise (billows), g,
+ * b and a Worley noise at 4, 8 and 16 cells across, which wears the billows into cloud shapes. */
+export const NOISE_FS =
+  HEADER +
+  /* glsl */ `
+uniform int uLayer;
+uniform int uN;
+out vec4 oColor;
+
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+vec3 h3(ivec3 c, int period) {
+  ivec3 w = ((c % period) + period) % period;
+  uint h = pcg(uint(w.x) * 73856093u ^ uint(w.y) * 19349663u ^ uint(w.z) * 83492791u ^ uint(period) * 2654435761u);
+  uint h2 = pcg(h);
+  uint h3v = pcg(h2);
+  return vec3(float(h >> 8u), float(h2 >> 8u), float(h3v >> 8u)) / 16777215.0;
+}
+float worley(vec3 p, int period) {
+  vec3 id = floor(p);
+  vec3 f = p - id;
+  float best = 9.0;
+  for (int z = -1; z <= 1; z++) {
+    for (int y = -1; y <= 1; y++) {
+      for (int x = -1; x <= 1; x++) {
+        ivec3 o = ivec3(x, y, z);
+        vec3 d = vec3(o) + h3(ivec3(id) + o, period) - f;
+        best = min(best, dot(d, d));
+      }
+    }
+  }
+  return 1.0 - clamp(sqrt(best), 0.0, 1.0);
+}
+float grad(ivec3 c, int period, vec3 d) {
+  return dot(normalize(h3(c, period) * 2.0 - 1.0 + 1e-4), d);
+}
+float perlin(vec3 p, int period) {
+  ivec3 i = ivec3(floor(p));
+  vec3 f = fract(p);
+  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = mix(grad(i, period, f), grad(i + ivec3(1, 0, 0), period, f - vec3(1, 0, 0)), u.x);
+  float b = mix(grad(i + ivec3(0, 1, 0), period, f - vec3(0, 1, 0)), grad(i + ivec3(1, 1, 0), period, f - vec3(1, 1, 0)), u.x);
+  float c = mix(grad(i + ivec3(0, 0, 1), period, f - vec3(0, 0, 1)), grad(i + ivec3(1, 0, 1), period, f - vec3(1, 0, 1)), u.x);
+  float d = mix(grad(i + ivec3(0, 1, 1), period, f - vec3(0, 1, 1)), grad(i + ivec3(1, 1, 1), period, f - vec3(1, 1, 1)), u.x);
+  return mix(mix(a, b, u.y), mix(c, d, u.y), u.z);
+}
+
+void main() {
+  vec3 p = vec3(gl_FragCoord.xy, float(uLayer) + 0.5) / float(uN);
+  float pf = 0.0;
+  float amp = 0.5;
+  int period = 4;
+  for (int k = 0; k < 4; k++) {
+    pf += amp * perlin(p * float(period), period);
+    amp *= 0.5;
+    period *= 2;
+  }
+  pf = clamp(pf * 1.2 + 0.5, 0.0, 1.0);
+  float w1 = worley(p * 4.0, 4);
+  float w2 = worley(p * 8.0, 8);
+  float w3 = worley(p * 16.0, 16);
+  float wf = w1 * 0.625 + w2 * 0.25 + w3 * 0.125;
+  oColor = vec4(wf + pf * (1.0 - wf), w1, w2, w3);
 }
 `;
 
@@ -119,6 +206,7 @@ uniform usampler2D uStates;
 uniform sampler2D uQuads;
 uniform sampler2D uAtlas;
 uniform sampler2D uSky;
+uniform sampler3D uNoise;
 
 uniform int uSide;
 uniform int uLevels;
@@ -156,6 +244,23 @@ uniform float uWaves;
 uniform int uBounces;
 uniform float uCloudY;
 uniform float uCloudCover;
+/** 0 no clouds, 1 Minecraft's blocky ones, 2 soft ones. */
+uniform int uCloudStyle;
+/** The soft clouds: the top of their layer, noise tiles per block, extinction per block where
+ * they are thickest, the distance at which they have faded out, and the sky's light on their
+ * tops and the ground's on their undersides. */
+uniform float uCloudTop;
+uniform float uCloudScale;
+uniform float uCloudSigma;
+uniform float uCloudFar;
+uniform vec3 uCloudAmbTop;
+uniform vec3 uCloudAmbBot;
+/** 1 when the light is the moon. */
+uniform float uMoon;
+/** Brightness of the stars: zero by day. */
+uniform float uStars;
+/** Radians per pixel. */
+uniform float uPixelAngle;
 
 const float PI = 3.14159265;
 const float FAR = 1e6;
@@ -399,7 +504,7 @@ bool cloudAt(ivec2 cell) {
 
 // Minecraft's flat clouds: 12×12-block cells, 4 blocks thick.
 bool cloudHit(vec3 ro, vec3 rd, vec3 inv, float tMax, inout Hit h) {
-  if (uCloudCover <= 0.0 || abs(rd.y) < 1e-6) return false;
+  if (uCloudStyle != 1 || abs(rd.y) < 1e-6) return false;
   float ta = (uCloudY - ro.y) * inv.y;
   float tb = (uCloudY + 4.0 - ro.y) * inv.y;
   float t = max(min(ta, tb), 0.0);
@@ -551,6 +656,198 @@ vec3 waterGlow(vec3 p) {
   vec3 w = toLinear(texelFetch(uWaterCol, columnOf(p.xz), 0).rgb);
   return w * (uAmbient + uSunE * max(uSunDir.y, 0.0) / PI) * 0.12;
 }
+
+// ---- Soft clouds ------------------------------------------------------------------------
+// A layer of cumulus between uCloudY and uCloudTop, from a coverage map and the noise above,
+// lit by the sun through the cloud in front of it (with a few orders of scattering worked
+// out at once, after Wrenninge) and by the sky above and the ground below.
+
+float remap01(float v, float a, float b) { return clamp((v - a) / (b - a), 0.0, 1.0); }
+float hgPhase(float c, float g) {
+  float gg = g * g;
+  return (1.0 - gg) / (4.0 * PI * pow(max(1.0 + gg - 2.0 * g * c, 1e-4), 1.5));
+}
+
+// How much cloud the sky over world spot w holds: none in the clear gaps, up to 1 in the middle
+// of the big clouds. It doesn't come from the 3D noise, so the clouds never repeat.
+float cloudCover(vec2 w) {
+  vec2 p = w * uCloudScale;
+  float n = cloudNoise(p) * 0.55 + cloudNoise(p * 2.13 + vec2(7.1, 3.3)) * 0.3 +
+            cloudNoise(p * 4.7 + vec2(1.7, 9.2)) * 0.15;
+  float lo = 0.38 + (0.5 - uCloudCover) * 0.5;
+  return remap01(n, lo, lo + 0.15);
+}
+
+float cloudDensity(vec3 p, bool detail) {
+  float h = (p.y - uCloudY) / (uCloudTop - uCloudY);
+  if (h <= 0.0 || h >= 1.0) return 0.0;
+  vec2 w = p.xz + uOrigin;
+  float c = cloudCover(w);
+  if (c <= 0.0) return 0.0;
+  // Big clouds grow tall; small ones stay low.
+  float hh = h / (0.3 + 0.7 * c);
+  if (hh >= 1.0) return 0.0;
+  vec3 q = vec3(w.x, p.y * 2.0, w.y) * uCloudScale;
+  vec4 n = textureLod(uNoise, q, 0.0);
+  // Billows, worn into by the Worley noise.
+  float wf = n.g * 0.625 + n.b * 0.25 + n.a * 0.125;
+  float v = remap01(remap01(n.r, 0.55, 0.92), (1.0 - wf) * 0.45, 1.0);
+  // Flat bottoms and rounded tops, and only the billows reach out into thin cover.
+  float shape = remap01(hh, 0.0, 0.07) * remap01(hh, 1.0, 0.5);
+  float d = remap01(v * shape, 1.0 - c, 1.2 - c * 0.8) * sqrt(c);
+  if (d <= 0.0 || !detail) return d;
+  // Finer noise frays the edges: wisps near the bottom, billows near the top.
+  vec4 m = textureLod(uNoise, q * 4.3 + vec3(0.31, 0.17, 0.73), 0.0);
+  float df = m.g * 0.625 + m.b * 0.25 + m.a * 0.125;
+  return remap01(d, mix(df, 1.0 - df, clamp(hh * 4.0, 0.0, 1.0)) * 0.7, 1.0);
+}
+
+// Light scattered towards the eye at p, per unit of the cloud's extinction there.
+vec3 cloudLight(vec3 p, float d, float cosT, int steps, bool detail) {
+  vec3 L = vec3(0.0);
+  if (uSunE.g > 0.0 && uSunDir.y > 0.0) {
+    // The cloud between p and the light, in steps that grow fast away from p; the first,
+    // short one with the fine noise, for the shading of the billows.
+    float dist = min((uCloudTop - p.y) / max(uSunDir.y, 0.08), (uCloudTop - uCloudY) * 4.0);
+    float sum = float(steps * (steps + 1) * (2 * steps + 1)) / 6.0;
+    float od = 0.0;
+    float t = 0.0;
+    float j = rand();
+    for (int i = 1; i <= 8; i++) {
+      if (i > steps) break;
+      float dt = dist * float(i * i) / sum;
+      od += cloudDensity(p + uSunDir * (t + dt * j), detail && i == 1) * dt;
+      t += dt;
+    }
+    od *= uCloudSigma;
+    // Light that scattered once, then light that scattered many times inside the cloud:
+    // dimmer per order, spread wider, and reaching deeper.
+    float e = mix(hgPhase(cosT, 0.8), hgPhase(cosT, -0.25), 0.3) * exp(-od);
+    e += 0.5 * hgPhase(cosT, 0.3) * exp(-0.4 * od);
+    e += 0.25 * hgPhase(cosT, 0.1) * exp(-0.15 * od);
+    // Fresh edges facing the light hold less of it than their thickness suggests, which
+    // gives the dark seams of real cumulus seen with the sun behind you.
+    float powder = 1.0 - exp(-2.0 * od - 6.0 * d);
+    L = uSunE * e * mix(1.0, powder, 0.75 - 0.5 * cosT);
+  }
+  // Half the sky's light on the tops (the other half of the sphere is cloud and ground),
+  // the ground's on the undersides.
+  float h = clamp((p.y - uCloudY) / (uCloudTop - uCloudY), 0.0, 1.0);
+  return L + 0.3 * mix(uCloudAmbBot, uCloudAmbTop, sqrt(h));
+}
+
+// The soft clouds between the ray's start and tMax: the light they send along it (rgb) and the
+// share of what lies behind them that gets through (a). r is where the ray is in their layer.
+vec4 cloudMarch(vec3 ro, vec3 rd, float tMax, int steps, int lightSteps, bool detail, out vec2 r) {
+  r = vec2(FAR);
+  if (uCloudStyle != 2) return vec4(0.0, 0.0, 0.0, 1.0);
+  float t0, t1;
+  if (abs(rd.y) < 1e-5) {
+    if (ro.y <= uCloudY || ro.y >= uCloudTop) return vec4(0.0, 0.0, 0.0, 1.0);
+    t0 = 0.0;
+    t1 = FAR;
+  } else {
+    float ta = (uCloudY - ro.y) / rd.y;
+    float tb = (uCloudTop - ro.y) / rd.y;
+    t0 = max(min(ta, tb), 0.0);
+    t1 = max(ta, tb);
+  }
+  t1 = min(min(t1, tMax), uCloudFar);
+  if (t0 >= t1) return vec4(0.0, 0.0, 0.0, 1.0);
+  r = vec2(t0, t1);
+  float dt = (t1 - t0) / float(steps);
+  float j = rand();
+  float cosT = dot(rd, uSunDir);
+  // Far away they take on the colour of the sky behind them, and thin out into it.
+  vec3 haze = skyRad(rd);
+  vec3 L = vec3(0.0);
+  float T = 1.0;
+  for (int i = 0; i < 64; i++) {
+    if (i >= steps) break;
+    float t = t0 + (float(i) + j) * dt;
+    vec3 p = ro + rd * t;
+    float d = cloudDensity(p, detail);
+    if (d <= 0.0) continue;
+    float s = d * uCloudSigma * (1.0 - smoothstep(uCloudFar * 0.4, uCloudFar, t));
+    float k = exp(-s * dt);
+    float far = t / (uCloudFar * 0.5);
+    vec3 S = mix(cloudLight(p, d, cosT, lightSteps, detail), haze, 1.0 - exp(-far * far));
+    L += T * S * (1.0 - k);
+    T *= k;
+    if (T < 0.02) {
+      T = 0.0;
+      break;
+    }
+  }
+  return vec4(L, T);
+}
+
+// The share of light the soft clouds let through from ro towards rd.
+float cloudShade(vec3 ro, vec3 rd, int steps) {
+  if (uCloudStyle != 2 || rd.y <= 1e-3 || ro.y >= uCloudTop) return 1.0;
+  float t0 = max((uCloudY - ro.y) / rd.y, 0.0);
+  float t1 = min((uCloudTop - ro.y) / rd.y, t0 + (uCloudTop - uCloudY) * 6.0);
+  float dt = (t1 - t0) / float(steps);
+  float j = rand();
+  float od = 0.0;
+  for (int i = 0; i < 16; i++) {
+    if (i >= steps) break;
+    od += cloudDensity(ro + rd * (t0 + (float(i) + j) * dt), false);
+  }
+  return exp(-od * dt * uCloudSigma);
+}
+
+// How much of the clouds' dimming lies before distance s along the ray.
+float cloudBefore(vec4 cl, vec2 r, float s) {
+  return mix(1.0, cl.a, clamp((s - r.x) / max(r.y - r.x, 1e-3), 0.0, 1.0));
+}
+
+// ---- The sun, the moon and the stars ------------------------------------------------------
+
+// The sun or the moon straight on: the sun darker towards its rim, as the real one is; the
+// moon a little mottled.
+vec3 lightDisk(vec3 rd) {
+  float c = dot(rd, uSunDir);
+  if (c <= uSunCos) return vec3(0.0);
+  vec3 base = uSunE / (2.0 * PI * (1.0 - uSunCos));
+  if (uMoon < 0.5) {
+    float mu = sqrt(clamp(1.0 - (1.0 - c) / (1.0 - uSunCos), 0.0, 1.0));
+    return base * (1.0 - 0.6 * (1.0 - mu)) / 0.8;
+  }
+  vec3 b;
+  vec3 t = frame(uSunDir, b);
+  vec2 q = vec2(dot(rd, t), dot(rd, b)) / sqrt(max(1.0 - uSunCos * uSunCos, 1e-9));
+  float m = cloudNoise(q * 2.5 + 4.0) * 0.6 + cloudNoise(q * 6.0 + 9.0) * 0.4;
+  return base * (0.7 + 0.6 * smoothstep(0.35, 0.7, m));
+}
+
+// Stars, and the Milky Way across the sky, for rays that reach the night sky.
+vec3 starLight(vec3 d) {
+  if (uStars <= 0.0 || d.y <= 0.0) return vec3(0.0);
+  vec3 L = vec3(0.0);
+  // At most one star in each small cell of directions.
+  ivec3 c = ivec3(floor(d * 220.0));
+  uint h = hash3(c + ivec3(911, 37, 503));
+  if ((h & 1023u) < 48u) {
+    uint h2 = pcg(h);
+    uint h3 = pcg(h2);
+    vec3 off = 0.2 + 0.6 * vec3(float(h2 & 1023u), float((h2 >> 10u) & 1023u), float((h2 >> 20u) & 1023u)) / 1023.0;
+    vec3 s = normalize(vec3(c) + off);
+    float a2 = 2.0 * max(1.0 - dot(d, s), 0.0);
+    float sig2 = uPixelAngle * uPixelAngle * 0.7;
+    float r = float(h3 & 65535u) / 65535.0;
+    float flux = pow(r, 8.0) * 6e-5 + 4e-7;
+    vec3 col = mix(vec3(1.0, 0.82, 0.62), vec3(0.72, 0.82, 1.0), float((h3 >> 16u) & 255u) / 255.0);
+    L += col * flux * exp(-a2 / (2.0 * sig2)) / (2.0 * PI * sig2);
+  }
+  vec3 band = normalize(vec3(0.866, 0.1, 0.5));
+  float g = dot(d, band);
+  float n = textureLod(uNoise, d * 1.3 + 0.5, 0.0).r;
+  float dust = textureLod(uNoise, d * 3.1 + 0.2, 0.0).g;
+  float mw = exp(-g * g / 0.03) * (0.3 + n) * (1.0 - 0.75 * smoothstep(0.5, 0.8, dust));
+  L += vec3(0.7, 0.78, 1.0) * mw * 5e-3;
+  return L * uStars * smoothstep(0.0, 0.25, d.y);
+}
 `;
 
 export const TRACE_FS =
@@ -641,7 +938,7 @@ void main() {
         continue;
       }
       if (!any && !sWater) {
-        vec3 c = sT * exp(-fogDepthOut(so, sd));
+        vec3 c = sT * exp(-fogDepthOut(so, sd)) * cloudShade(so, sd, 6);
         if (!shadowFog) Ls += sunW * c;
         else if (fogMatte) Ls += fogW * c;
         else La += fogW * c;
@@ -656,6 +953,15 @@ void main() {
       // Half floats end at 65504.
       guide = any ? vec4(h.n, min(h.t, SKY_DEPTH)) : vec4(-rd, SKY_DEPTH);
     }
+    // Soft clouds along the way: finely for what the camera sees (and its reflections),
+    // coarsely for light bounced off the ground.
+    vec2 cldR = vec2(FAR);
+    vec4 cld = inWater ? vec4(0.0, 0.0, 0.0, 1.0) : cloudMarch(ro, rd, any ? h.t : FAR, camera ? 40 : 10, camera ? 5 : 2, camera, cldR);
+    if (cld.a < 1.0) {
+      vec3 add = thr * cld.rgb * exp(-fogDepth(ro, rd, cldR.x));
+      if (matte) Ls += add;
+      else La += add;
+    }
     // Fog along the way: light scattered towards us from one point of it, and what it dims.
     if (!inWater && uFogDensity > 0.0) {
       float od = fogDepth(ro, rd, segEnd);
@@ -665,7 +971,7 @@ void main() {
         float s = min(-log(1.0 - rand() * (1.0 - keep)) / sigma, segEnd);
         vec3 ps = ro + rd * s;
         float pdf = sigma * exp(-sigma * s) / (1.0 - keep);
-        vec3 w = thr * exp(-fogDepth(ro, rd, s)) * fogAt(ps.y) / pdf * uFogColor;
+        vec3 w = thr * exp(-fogDepth(ro, rd, s)) * cloudBefore(cld, cldR, s) * fogAt(ps.y) / pdf * uFogColor;
         vec3 add = w * uAmbient;
         if (matte) Ls += add;
         else La += add;
@@ -677,6 +983,7 @@ void main() {
       }
       thr *= keep;
     }
+    thr *= cld.a;
     if (inWater) {
       vec3 tw = exp(-waterSigma(ro) * segEnd);
       vec3 glow = thr * (1.0 - tw) * waterGlow(ro);
@@ -690,10 +997,10 @@ void main() {
         // The sun itself only where nothing matte came before (that light is in the shadow
         // rays), and a glint on the water kept to a few times a sunlit white wall, so that the
         // rare rays that find it don't speckle the picture.
-        if (camera && dot(rd, uSunDir) > uSunCos) {
-          vec3 sun = uSunE / (2.0 * PI * (1.0 - uSunCos));
+        if (camera) {
+          vec3 sun = lightDisk(rd);
           if (specular > 0) sun *= min(1.0, 2.0 * lum(uSunE) / max(lum(thr * sun), 1e-6));
-          sky += sun;
+          sky += sun + starLight(rd);
         }
         if (matte) Ls += thr * sky;
         else La += thr * sky;
@@ -911,7 +1218,7 @@ vec3 toSrgb(vec3 c) {
 }
 `;
 
-/** The picture: light times surface colour plus what came before, exposed and tone mapped. */
+/** The picture's light: light times surface colour plus what came before, exposed. */
 export const COMPOSITE_FS =
   HEADER +
   /* glsl */ `
@@ -923,9 +1230,6 @@ uniform sampler2D uLa;
 uniform bool uDenoise;
 uniform float uExposure;
 out vec4 oColor;
-` +
-  TONE +
-  /* glsl */ `
 
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
@@ -935,10 +1239,85 @@ void main() {
   } else {
     c = texelFetch(uLa, p, 0).rgb + texelFetch(uLm, p, 0).rgb;
   }
-  c = aces(max(c, 0.0) * uExposure);
+  oColor = vec4(min(max(c, 0.0) * uExposure, vec3(60000.0)), 1.0);
+}
+`;
+
+/** Glow, as a camera lens spreads bright light: the light is halved in size a few times
+ * (each texel the mean of four bilinear taps, the first time weighted against lone bright
+ * pixels so that noise doesn't bloom), then the halves are blurred back up and summed. */
+export const BLOOM_DOWN_FS =
+  HEADER +
+  /* glsl */ `
+uniform sampler2D uSrc;
+uniform vec2 uSrcSize;
+uniform vec2 uDstSize;
+/** From the destination's coordinates to the part of the source that holds the picture. */
+uniform vec2 uUvScale;
+uniform vec2 uUvMax;
+uniform bool uFirst;
+out vec4 oColor;
+
+float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uDstSize * uUvScale;
+  vec2 d = 1.0 / uSrcSize;
+  vec3 a = texture(uSrc, min(uv + vec2(-d.x, -d.y), uUvMax)).rgb;
+  vec3 b = texture(uSrc, min(uv + vec2(d.x, -d.y), uUvMax)).rgb;
+  vec3 c = texture(uSrc, min(uv + vec2(-d.x, d.y), uUvMax)).rgb;
+  vec3 e = texture(uSrc, min(uv + vec2(d.x, d.y), uUvMax)).rgb;
+  vec4 w = uFirst ? 1.0 / (1.0 + vec4(lum(a), lum(b), lum(c), lum(e)) * 0.02) : vec4(1.0);
+  oColor = vec4((a * w.x + b * w.y + c * w.z + e * w.w) / (w.x + w.y + w.z + w.w), 1.0);
+}
+`;
+
+export const BLOOM_UP_FS =
+  HEADER +
+  /* glsl */ `
+uniform sampler2D uSrc;
+uniform vec2 uSrcSize;
+uniform vec2 uDstSize;
+out vec4 oColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uDstSize;
+  vec2 d = 1.0 / uSrcSize;
+  vec3 s = texture(uSrc, uv).rgb * 4.0;
+  s += (texture(uSrc, uv + vec2(d.x, 0.0)).rgb + texture(uSrc, uv - vec2(d.x, 0.0)).rgb +
+        texture(uSrc, uv + vec2(0.0, d.y)).rgb + texture(uSrc, uv - vec2(0.0, d.y)).rgb) * 2.0;
+  s += texture(uSrc, uv + d).rgb + texture(uSrc, uv - d).rgb +
+       texture(uSrc, uv + vec2(d.x, -d.y)).rgb + texture(uSrc, uv + vec2(-d.x, d.y)).rgb;
+  oColor = vec4(s / 16.0, 1.0);
+}
+`;
+
+/** The finished picture: the light with its glow, darker towards the corners, tone mapped. */
+export const FINISH_FS =
+  HEADER +
+  /* glsl */ `
+uniform sampler2D uHdr;
+uniform sampler2D uBloom;
+uniform vec2 uOutSize;
+/** Share of the light spread into the glow, and what to divide the summed glow by. */
+uniform float uGlow;
+uniform float uBloomNorm;
+uniform float uVignette;
+out vec4 oColor;
+` +
+  TONE +
+  /* glsl */ `
+
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec2 uv = gl_FragCoord.xy / uOutSize;
+  vec3 c = texelFetch(uHdr, p, 0).rgb;
+  if (uGlow > 0.0) c = mix(c, texture(uBloom, uv).rgb * uBloomNorm, uGlow);
+  vec2 q = (uv - 0.5) * vec2(uOutSize.x / uOutSize.y, 1.0);
+  c *= 1.0 - uVignette * smoothstep(0.15, 0.85, dot(q, q));
   // A little dither against banding in the sky.
   float n = fract(sin(dot(vec2(p), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
-  oColor = vec4(toSrgb(c) + n / 255.0, 1.0);
+  oColor = vec4(toSrgb(aces(c)) + n / 255.0, 1.0);
 }
 `;
 
@@ -954,10 +1333,10 @@ uniform float uExposure;
 uniform vec3 uSkyUp;
 uniform vec3 uBounce;
 out vec4 oColor;
-` +
-  TONE +
-  /* glsl */ `
+
 void main() {
+  // The clouds' steps start at a different place in each pixel: fine grain, not bands.
+  rng = pcg(uint(gl_FragCoord.x) * 1973u + uint(gl_FragCoord.y) * 9277u + 101u);
   vec2 ndc = gl_FragCoord.xy / uRes * 2.0 - 1.0;
   vec3 rd = normalize(uCamFwd + ndc.x * uTanHalfFov * uAspect * uCamRight + ndc.y * uTanHalfFov * uCamUp);
   vec3 ro = uCamPos;
@@ -981,16 +1360,22 @@ void main() {
         sWater = h.kind == WENTER;
         continue;
       }
-      if (!any && !sWater) c += sunW * sT * exp(-fogDepthOut(so, sd));
+      if (!any && !sWater) c += sunW * sT * exp(-fogDepthOut(so, sd)) * cloudShade(so, sd, 4);
       break;
     }
 
     float segEnd = any ? h.t : uFogFar;
+    vec2 cldR = vec2(FAR);
+    vec4 cld = inWater ? vec4(0.0, 0.0, 0.0, 1.0) : cloudMarch(ro, rd, any ? h.t : FAR, 20, 2, true, cldR);
+    if (cld.a < 1.0) c += thr * cld.rgb * exp(-fogDepth(ro, rd, cldR.x));
     if (!inWater && uFogDensity > 0.0) {
       float keep = exp(-fogDepth(ro, rd, segEnd));
-      c += thr * (1.0 - keep) * (uAmbient + uSunE * phaseHG(dot(rd, uSunDir))) * uFogColor;
+      // Fog seen from above the clouds lies behind them.
+      float behind = ro.y > uCloudY ? cld.a : 1.0;
+      c += thr * behind * (1.0 - keep) * (uAmbient + uSunE * phaseHG(dot(rd, uSunDir))) * uFogColor;
       thr *= keep;
     }
+    thr *= cld.a;
     if (inWater) {
       vec3 tw = exp(-waterSigma(ro) * segEnd);
       c += thr * (1.0 - tw) * waterGlow(ro);
@@ -999,7 +1384,7 @@ void main() {
     if (!any) {
       if (!inWater) {
         vec3 sky = skyRad(rd);
-        if (surfaces == 0 && dot(rd, uSunDir) > uSunCos) sky += uSunE / (2.0 * PI * (1.0 - uSunCos));
+        if (surfaces == 0) sky += lightDisk(rd) + starLight(rd);
         c += thr * sky;
       }
       break;
@@ -1044,7 +1429,8 @@ void main() {
     sWater = inWater;
     sunW = thr * alb * uSunE * cl / PI;
   }
-  oColor = vec4(toSrgb(aces(max(c, 0.0) * uExposure)), 1.0);
+  // Exposed but not yet tone mapped: the glow is added before that.
+  oColor = vec4(min(max(c, 0.0) * uExposure, vec3(60000.0)), 1.0);
 }
 `;
 

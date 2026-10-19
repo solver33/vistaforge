@@ -18,6 +18,11 @@ export const SKY_GAIN = 1.6;
 export const SUN_DIRECT = 0.35;
 /** The real sun's angular radius. */
 export const SUN_RADIUS = (0.2665 * Math.PI) / 180;
+/** Moonlight as a share of sunlight, and its colour. The real moon gives far less, but a
+ * picture of a moonlit night is exposed for much longer than one by day; the blue is how
+ * night looks to the eye. */
+export const MOON_GAIN = 0.035;
+export const MOON_TINT: Vec3 = [0.5, 0.68, 1.15];
 
 const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
@@ -56,6 +61,12 @@ export function skyRadiance(r: Vec3, s: Vec3, power = SUN_POWER): Vec3 {
     const odMie = Math.exp(-h / SH_MIE) * iStep;
     iOdRlh += odRlh;
     iOdMie += odMie;
+    // In the planet's shadow (after sunset), no sunlight reaches this point.
+    const g = sphere(pos, s, R_PLANET);
+    if (g[0] <= g[1] && g[0] > 0) {
+      iTime += iStep;
+      continue;
+    }
     const [jOdRlh, jOdMie] = opticalDepth(pos, s, 8);
     for (let c = 0; c < 3; c++) {
       const attn = Math.exp(-(K_MIE * (iOdMie + jOdMie) + K_RLH[c] * (iOdRlh + jOdRlh)));
