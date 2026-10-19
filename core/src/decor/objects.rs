@@ -353,7 +353,7 @@ impl Objects {
         let rock = surface.geology.boulder(suite, r(6));
         let wet_place = damp(top.biome, top, anchor.moisture);
         let mossy = if wet_place && r(7) < 0.7 {
-            surface.geology.mossy_any(rock)
+            surface.geology.mossy(rock)
         } else {
             None
         };

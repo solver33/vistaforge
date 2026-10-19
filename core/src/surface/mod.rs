@@ -51,6 +51,23 @@ pub(crate) fn freezes(b: Biome) -> bool {
     matches!(b, Biome::Tundra | Biome::SnowyTaiga)
 }
 
+/// How much of a column's land is volcanic, 0..1, following the biome blend smoothly (unlike
+/// the ground, which takes one biome or the other in patches), so volcanic rock takes over
+/// from the land's rock gradually down a volcano's flanks.
+fn volcanic_share(col: &ColumnInfo) -> f32 {
+    let (a, b, t) = if matches!(col.biome, Biome::River | Biome::Lake | Biome::Beach) {
+        (col.biome2, col.biome2, 0.0)
+    } else {
+        (col.biome, col.biome2, col.blend.clamp(0.0, 1.0))
+    };
+    let v = |b: Biome| (b == Biome::Volcanic) as u8 as f32;
+    if a == b {
+        v(a)
+    } else {
+        v(a) * (1.0 - t) + v(b) * t
+    }
+}
+
 /// The biome of the land a column belongs to: for water and beaches, the land around them.
 pub(crate) fn land_of(col: &ColumnInfo) -> Biome {
     if matches!(col.biome, Biome::River | Biome::Lake | Biome::Beach) {
@@ -358,11 +375,7 @@ impl Surface {
             Zone::Open | Zone::Wet | Zone::Stony | Zone::Scree | Zone::Shore if spray => Zone::Wet,
             z => z,
         };
-        let strata = if biome == Biome::Volcanic {
-            self.geology.strata_of(x, z, geology::VOLCANIC)
-        } else {
-            self.geology.strata(x, z)
-        };
+        let strata = self.geology.strata(x, z, volcanic_share(col));
         let r = self.recipe(biome);
         let mat = match zone {
             Zone::Open => self.choose(&r.open, 1, x, z, strata.suite),
@@ -399,7 +412,7 @@ impl Surface {
                 let (y, _) = col.ground();
                 let rock = self.geology.rock(&strata, y - 1);
                 let damp = spray || col.moisture + dither(self.seed, 20, x, z, 0.3) > 0.5;
-                match self.geology.mossy(&strata, rock) {
+                match self.geology.mossy(rock) {
                     Some(m) if r.mossy_rock && damp => m,
                     _ => rock,
                 }
